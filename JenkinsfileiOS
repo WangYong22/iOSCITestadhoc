@@ -1,0 +1,761 @@
+pipeline {
+  agent any
+
+  environment {
+    KCFG_ID     = 'k8s-jenkins'                 // kubeconfig 凭据ID
+    POD_TMPL    = 'macos-pod.yaml'              // Pod 模板
+    BUILD_NODE  = "macos-${env.BUILD_TAG}"      // 本次构建唯一节点名
+    JENKINS_URL = 'http://17.87.2.137:8080'     // Jenkins 根URL（不要以 / 结尾）
+  }
+
+  options { timestamps() }
+
+  stages {
+
+    stage('Create Jenkins Node') {
+      steps {
+        withCredentials([usernameColonPassword(credentialsId: 'jenkins-api', variable: 'JAUTH')]) {
+          script {
+            def NODE = env.BUILD_NODE
+            def JURL = (env.JENKINS_URL?.trim()) ?: 'http://17.87.2.137:8080'
+
+            // 1) 写入节点 XML（注意 \$ 的转义）
+            writeFile file: 'node.xml', text: """
+<slave>
+  <name>${NODE}</name>
+  <description>ephemeral macOS</description>
+  <remoteFS>/Users/test/jenkins-agent</remoteFS>
+  <numExecutors>1</numExecutors>
+  <mode>NORMAL</mode>
+  <retentionStrategy class="hudson.slaves.RetentionStrategy\\\$Always"/>
+  <launcher class="hudson.slaves.JNLPLauncher">
+    <webSocket>true</webSocket>
+  </launcher>
+  <label>${NODE}</label>
+  <nodeProperties/>
+</slave>
+""".stripIndent()
+
+            // 2) 取 crumb -> /scriptText 创建/更新 -> 覆盖 config.xml -> 解析 JNLP secret（不跑 kubectl）
+            sh """#!/bin/bash
+set -xeuo pipefail
+NODE='${NODE}'
+JURL='${JURL}'
+
+# 取 CSRF crumb
+if command -v jq >/dev/null 2>&1; then
+  CRUMB=\$(curl -fsS -u "\$JAUTH" "\$JURL/crumbIssuer/api/json" | jq -r .crumb)
+else
+  CRUMB=\$(curl -fsS -u "\$JAUTH" "\$JURL/crumbIssuer/api/json" | sed -n 's/.*"crumb"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
+fi
+[ -n "\$CRUMB" ] || { echo "Failed to get CRUMB"; exit 1; }
+
+# 写到临时文件，避免 read -d '' 的坑
+cat > .scriptText.groovy <<GROOVY
+import jenkins.model.Jenkins
+import hudson.model.Node
+import hudson.slaves.DumbSlave
+import hudson.slaves.RetentionStrategy
+import hudson.slaves.JNLPLauncher
+import java.util.LinkedList
+
+def name   = "${NODE}"            // ← 直接嵌入 bash 里的 NODE 值
+def labels = name
+def home   = "/Users/test/jenkins-agent"
+
+def j = Jenkins.get()
+def n = j.getNode(name)
+def launcher = new JNLPLauncher()
+launcher.setWebSocket(true)
+
+if (n == null) {
+  n = new DumbSlave(name, "ephemeral macOS", home, "1",
+    Node.Mode.NORMAL, labels, launcher,
+    new RetentionStrategy.Always(), new LinkedList())
+  j.addNode(n)
+} else {
+  n.setLauncher(launcher)
+  n.setLabelString(labels)
+  n.setNumExecutors(1)
+  n.setMode(Node.Mode.NORMAL)
+  j.save()
+}
+println "READY"
+GROOVY
+
+export NODE_NAME="\$NODE"
+
+# 执行 /scriptText
+RESP=\$(curl -fsS -u "\$JAUTH" -H "Jenkins-Crumb: \$CRUMB" \\
+  --data-urlencode script@.scriptText.groovy \\
+  "\$JURL/scriptText")
+echo "\$RESP" | grep -q READY || { echo "scriptText create node failed"; echo "\$RESP" | head -200; exit 1; }
+
+# 覆盖节点 config.xml（幂等）
+curl -fsS -u "\$JAUTH" -H "Jenkins-Crumb: \$CRUMB" \\
+     -X POST -H 'Content-Type: application/xml' \\
+     --data-binary @node.xml \\
+     "\$JURL/computer/\$NODE/config.xml"
+
+# 解析 JNLP secret（新旧路径兼容）
+sleep 2
+HTTP1=\$(curl -u "\$JAUTH" -w '%{http_code}' -fsSLo .jnlp1 "\$JURL/computer/\$NODE/jenkins-agent.jnlp" || true)
+HTTP2=\$(curl -u "\$JAUTH" -w '%{http_code}' -fsSLo .jnlp2 "\$JURL/computer/\$NODE/slave-agent.jnlp"   || true)
+echo "jenkins-agent.jnlp http=\$HTTP1, slave-agent.jnlp http=\$HTTP2"
+
+SECRET=""
+SECRET=\$(grep -hoE -- '--secret [0-9a-f]{64,}' .jnlp1 .jnlp2 2>/dev/null | head -1 | awk '{print \$2}') || true
+if [ -z "\$SECRET" ]; then
+  SECRET=\$(grep -hoE -- '<argument>[0-9a-f]{64,}</argument>' .jnlp1 .jnlp2 2>/dev/null | head -1 | sed -E 's#</?argument>##g') || true
+fi
+[ -n "\$SECRET" ] || { echo "no JNLP secret parsed"; head -50 .jnlp1 .jnlp2 2>/dev/null || true; exit 1; }
+echo "\$SECRET" > .jnlp.secret
+echo "Parsed JNLP secret length=\${#SECRET}"
+"""
+
+// 关键：从文件读回到 Groovy 变量
+def SECRET = readFile('.jnlp.secret').trim()
+echo "Groovy got SECRET length=${SECRET.length()}"
+
+
+// 3) 现在进入 withKubeConfig，下发 K8s Secret 时，使用 Groovy 变量插值
+withKubeConfig([credentialsId: env.KCFG_ID]) {
+  sh """#!/bin/bash
+set -xeuo pipefail
+kubectl -n ci delete secret jenkins-macos-${NODE} --ignore-not-found || true
+kubectl -n ci create secret generic jenkins-macos-${NODE} \\
+  --from-literal=JENKINS_URL=${JURL} \
+  --from-literal=JENKINS_NODE_NAME=${NODE} \
+  --from-literal=JENKINS_SECRET=${SECRET}  \
+  --from-literal=VM_USER=test \
+  --from-literal=VM_PASS=test 
+"""
+            }
+          }
+        }
+      }
+    }
+
+    stage('Launch VM Pod') {
+      steps {
+        sh 'cp /var/jenkins_home/pod-templates/macos-pod.yaml .'
+        withKubeConfig([credentialsId: env.KCFG_ID]) {
+          sh """
+            sed -e "s/__BUILD_ID__/${BUILD_NODE}/g" \
+                -e "s/__HOST_PORT__/30222/g"  \
+                -e "s/__VZ_USER__/test/g" \
+                -e "s/__VZ_PASS__/test/g" macos-pod.yaml > rendered.yaml
+
+            echo '===== rendered.yaml (compute env) ====='
+            awk '/name: compute/{f=1} f{print} /name: jenkins-bootstrap/{f=0}' rendered.yaml
+            echo '======================================'
+
+            kubectl -n ci apply -f rendered.yaml
+          """
+          
+          sh '''
+            kubectl -n ci wait --for=condition=Initialized --timeout=120s pod/macos-build-${BUILD_NODE} || true
+
+            kubectl -n ci describe pod macos-build-${BUILD_NODE} | sed -n '/Events:/,$p'
+            kubectl -n ci get pod macos-build-${BUILD_NODE} -o wide || true
+
+            kubectl -n ci get pod macos-build-${BUILD_NODE} -o json \
+              | jq '.spec.containers[] | select(.name=="jenkins-bootstrap") | {envFrom: .envFrom, env: .env}' || true
+
+            kubectl -n ci get secret jenkins-macos-${BUILD_NODE} -o jsonpath='{.data.JENKINS_URL}' | base64 -d; echo
+            kubectl -n ci get secret jenkins-macos-${BUILD_NODE} -o jsonpath='{.data.JENKINS_SECRET}' | base64 -d | awk '{print "LEN=" length}'
+
+        
+          '''
+          sh '''
+            POD=macos-build-${BUILD_NODE}
+
+            # 每个容器的等待原因/信息
+            kubectl -n ci get pod "$POD" -o jsonpath='{range .status.containerStatuses[*]}{.name}{" => "}{.state.waiting.reason}{" : "}{.state.waiting.message}{"\n"}{end}' || true
+            echo
+
+            # 只看 jenkins-bootstrap 的详细等待对象
+            kubectl -n ci get pod "$POD" -o json \
+              | jq '.status.containerStatuses[] | select(.name=="jenkins-bootstrap")' || true
+
+            # 相关事件（按时间排序）
+            kubectl -n ci get events --field-selector involvedObject.name="$POD" --sort-by=.lastTimestamp || true
+          '''
+          sh '''
+            kubectl -n ci get pod macos-build-${BUILD_NODE} -o yaml \
+              | sed -n "/containerStatuses:/,/^$/p" || true
+          '''
+          sh """
+            kubectl -n ci get pod macos-build-${BUILD_NODE} -o wide || true
+          """
+        }
+      }
+    }
+  
+	stage('Cred debug: ssh private key (137ssh)') {
+	  steps {
+		withCredentials([sshUserPrivateKey(credentialsId: '137ssh',
+										   keyFileVariable: 'SSH_KEY',
+										   usernameVariable: 'SSH_USER')]) {
+		  sh '''#!/bin/bash
+			set -euo pipefail
+			echo "[DEBUG] local host: $(hostname)"
+			
+			ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+			   "$SSH_USER@17.87.2.137" 'echo "[REMOTE] ok from $(hostname)"'
+			'''
+			}
+	  }
+	}
+
+
+	 stage('Build on macOS') {
+	  agent { label "${env.BUILD_NODE}" }
+	
+	  steps {
+	    withCredentials([string(credentialsId: 'macos-login-keychain-pass', variable: 'KEYCHAIN_PASS')]) {
+		  sh '''#!/bin/bash
+		  set -euo pipefail
+		  set +u
+		  LOGIN_KC="${HOME}/Library/Keychains/login.keychain-db"
+		  KEYCHAIN_PASS="${KEYCHAIN_PASS:-}"
+		  set -u
+		
+		  : "${KEYCHAIN_PASS:?KEYCHAIN_PASS is empty — configure Jenkins credential 'macos-login-keychain-pass'}"
+		
+		  [ -f "$LOGIN_KC" ] || security create-keychain -p "${KEYCHAIN_PASS}" "$LOGIN_KC"
+		  security unlock-keychain -p "${KEYCHAIN_PASS}" "$LOGIN_KC"
+		  security default-keychain -s "$LOGIN_KC"
+		  security list-keychains -d user -s "$LOGIN_KC"
+		  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASS}" "$LOGIN_KC"
+		  '''
+		}
+	  
+		// 1) 连通性
+		sh '''#!/bin/bash
+		set -euo pipefail
+		hostname
+		sw_vers
+		'''
+	
+		// 2) 拉取 provisioning profile（用 Jenkins 中 ID=137ssh 的私钥）
+		
+		sh '''#!/bin/bash
+		set -euo pipefail
+		
+	    echo "[CHK] A: start profile lookup"
+
+		# ==== 可配置项 ====
+		SEARCH_ROOT="${WORKSPACE:-$PWD}"
+		# 注意：双引号里是一个字符串，后面会手动展开为两个模式
+		PROFILE_GLOB="${PROFILE_GLOB:-*.mobileprovision *.provisionprofile}"
+		PREFER_BUNDLEID="${PREFER_BUNDLEID:-}"
+		echo "[DBG] SEARCH_ROOT=$SEARCH_ROOT"
+		echo "[DBG] PROFILE_GLOB=$PROFILE_GLOB"
+		echo "[DBG] PREFER_BUNDLEID=$PREFER_BUNDLEID"
+		# =================
+		
+		# 收集候选（按时间倒序）
+		echo "[CHK] B: collect candidates"
+		CANDIDATES=()
+		# 手工拆分 glob 列表，兼容 bash 3.2
+		for pat in ${PROFILE_GLOB}; do
+		  while IFS= read -r f; do
+			[ -n "$f" ] && CANDIDATES+=("$f")
+		  done < <(cd "$SEARCH_ROOT" && ls -1t $pat 2>/dev/null || true)
+		done
+		
+		if [ ${#CANDIDATES[@]} -eq 0 ]; then
+		  echo "[ERR] 未找到 *.mobileprovision / *.provisionprofile；请把 profile 放到仓库根或设置 PROFILE_GLOB"
+		  exit 1
+		fi
+		echo "[DBG] candidates count=${#CANDIDATES[@]}"
+		printf '  - %s\n' "${CANDIDATES[@]}"
+		
+		# 读取 profile 的 application-identifier （TEAMID.bundleid）
+		read_appid() {
+		  local pf="$1" tmp err
+		  tmp="$(mktemp /tmp/_pp.XXXXXX.plist)"
+		  err="$(mktemp /tmp/_pp.err.XXXXXX)"
+		  if /usr/bin/security cms -D -i "$pf" >"$tmp" 2>"$err"; then
+			:  # OK
+		  else
+			echo "[WARN] security cms failed on $pf:"
+			cat "$err" || true
+			if file "$pf" | grep -qi 'XML'; then
+			  cp "$pf" "$tmp"
+			else
+			  rm -f "$tmp" "$err"
+			  return 1
+			fi
+		  fi
+		  APPID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$tmp" 2>/dev/null || echo "")
+		  rm -f "$tmp" "$err"
+		  [ -n "$APPID" ]
+		}
+		
+		# 选择 profile：优先匹配 PREFER_BUNDLEID，否则取最新
+		echo "[CHK] C: pick profile"
+		PROFILE=""
+		if [ -n "$PREFER_BUNDLEID" ]; then
+		  for f in "${CANDIDATES[@]}"; do
+			pf="$SEARCH_ROOT/$f"
+			if read_appid "$pf"; then
+			  bid="${APPID#*.}"
+			  if [ "$bid" = "$PREFER_BUNDLEID" ]; then
+				PROFILE="$pf"
+				break
+			  fi
+			fi
+		  done
+		fi
+		if [ -z "$PROFILE" ]; then
+		  PROFILE="$SEARCH_ROOT/${CANDIDATES[0]}"
+		fi
+		echo "[PICK] $PROFILE"
+		[ -f "$PROFILE" ] || { echo "[ERR] PROFILE 文件不存在：$PROFILE"; exit 1; }
+		
+		# 解包 plist
+		echo "[CHK] D: decode profile"
+		PLIST="$(mktemp /tmp/_pp.XXXXXX.plist)"
+		if /usr/bin/security cms -D -i "$PROFILE" > "$PLIST" 2>/dev/null; then
+		  :
+		else
+		  if file "$PROFILE" | grep -qi 'XML'; then
+			cp "$PROFILE" "$PLIST"
+		  else
+			echo "[ERR] 无法解析 provisioning profile：$PROFILE"
+			exit 1
+		  fi
+		fi
+		/usr/bin/plutil -lint "$PLIST"
+		
+		# 取关键字段
+		NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PLIST")
+		UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PLIST")
+		APPID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$PLIST" 2>/dev/null || echo "")
+		TEAM_FROM_ENT=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$PLIST" 2>/dev/null || echo "")
+		GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:get-task-allow' "$PLIST" 2>/dev/null || echo "false")
+		PLATFORM0=$(/usr/libexec/PlistBuddy -c 'Print :Platform:0' "$PLIST" 2>/dev/null || echo "")
+		
+		TEAMID="${TEAM_FROM_ENT:-${APPID%%.*}}"
+		BUNDLEID="${APPID#*.}"
+		
+		echo "[PP] Name=$NAME"
+		echo "[PP] UUID=$UUID"
+		echo "[PP] TeamID=$TEAMID"
+		echo "[PP] BundleID=$BUNDLEID"
+		echo "[PP] get-task-allow=$GET_TASK_ALLOW"
+		echo "[PP] Platform[0]=$PLATFORM0"
+		
+		# 判定证书类型与目的平台
+		if [ "$GET_TASK_ALLOW" = "true" ]; then
+		  PROFILE_KIND="debugging"
+		  CERT_KIND="Apple Development"
+		else
+		  PROFILE_KIND="distribution"
+		  CERT_KIND="Apple Distribution"
+		fi
+		
+		# —— 不再在这里直接设置 DESTINATION；只做平台“提示” —— 
+		case "$(printf '%s' "${PLATFORM0:-}" | tr '[:upper:]' '[:lower:]')" in
+		  visionos|xros) DESTINATION_HINT="generic/platform=visionOS" ;;
+		  ios)           DESTINATION_HINT="generic/platform=iOS" ;;
+		  macos)         DESTINATION_HINT="generic/platform=macOS" ;;
+		  *)             DESTINATION_HINT="" ;;
+		esac
+		
+		echo "[PP] kind=$PROFILE_KIND  platform_hint=${DESTINATION_HINT:-none}  cert=$CERT_KIND"
+		
+		# 安装 profile
+		DEST_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+		mkdir -p "$DEST_DIR"
+		install -m 0644 "$PROFILE" "$DEST_DIR/${UUID}.mobileprovision"
+		echo "[INSTALL] $DEST_DIR/${UUID}.mobileprovision"
+		
+		# 选择匹配证书（需要你已导入带私钥证书并解锁 login 钥匙串）
+		echo "[CHK] E: pick signing identity (robust matcher)"
+
+		# 可选：显式指定证书可读名称（最可靠）
+		# export CERT_CN='Apple Development: Yong Wang (LFBT5QQQ6J)'
+		
+		ALL_IDS="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+		echo "[DBG] identities raw:"
+		printf '%s\n' "$ALL_IDS" | sed -e 's/^/  /'
+		
+		pick_by_cn() {
+		  # 精确用证书可读名称匹配（CN）
+		  printf '%s\n' "$ALL_IDS" | awk -v cn="$CERT_CN" -F'"' '$0 ~ cn {print $2; exit}'
+		}
+		
+		pick_by_kind_team() {
+		  # 同时匹配证书类型 + (TEAMID) —— 某些系统输出里没有(TEAMID)，可能匹配不到
+		  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -v t="$TEAMID" -F'"' \
+			  'index($0,k) && index($0,"(" t ")") {print $2; exit}'
+		}
+		
+		pick_by_kind_only() {
+		  # 只匹配证书类型（如 Apple Development），取第一张
+		  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -F'"' \
+			  'index($0,k) {print $2; exit}'
+		}
+		
+		CODE_SIGN_IDENTITY=""
+		
+		if [ -n "${CERT_CN:-}" ]; then
+		  CODE_SIGN_IDENTITY="$(pick_by_cn)"
+		  echo "[DBG] pick_by_cn => ${CODE_SIGN_IDENTITY:-<empty>}"
+		fi
+		
+		if [ -z "$CODE_SIGN_IDENTITY" ]; then
+		  CODE_SIGN_IDENTITY="$(pick_by_kind_team)"
+		  echo "[DBG] pick_by_kind_team => ${CODE_SIGN_IDENTITY:-<empty>}"
+		fi
+		
+		if [ -z "$CODE_SIGN_IDENTITY" ]; then
+		  CODE_SIGN_IDENTITY="$(pick_by_kind_only)"
+		  echo "[DBG] pick_by_kind_only => ${CODE_SIGN_IDENTITY:-<empty>}"
+		fi
+		
+		if [ -z "$CODE_SIGN_IDENTITY" ]; then
+		  echo "[ERR] 仍然找不到匹配证书（kind=$CERT_KIND, team=$TEAMID）。"
+		  echo "      你可以显式指定： export CERT_CN='Apple Development: Yong Wang (LFBT5QQQ6J)'"
+		  exit 1
+		fi
+		
+		echo "[CERT] picked: $CODE_SIGN_IDENTITY"
+		
+		
+		# ====== 自动探测 Xcode 工程 / Scheme / Configuration ======
+		set -euo pipefail
+		
+		# 已有值则尊重，没值才探测
+		: "${WORKSPACE:=$PWD}"
+		
+		# 1) 找到工程路径（优先 .xcworkspace）
+			Project_Path=""
+			# 先当前目录
+			if compgen -G "*.xcworkspace" >/dev/null; then
+			  Project_Path="./$(ls -1d *.xcworkspace | head -1)"
+			elif compgen -G "*.xcodeproj" >/dev/null; then
+			  Project_Path="./$(ls -1d *.xcodeproj   | head -1)"
+			else
+			  # 再找一级子目录
+			  while IFS= read -r d; do
+				[ -d "$d" ] || continue
+				if compgen -G "$d"*.xcworkspace >/dev/null; then
+				  Project_Path="$(ls -1d "$d"*.xcworkspace | head -1)"; break
+				elif compgen -G "$d"*.xcodeproj >/dev/null; then
+				  Project_Path="$(ls -1d "$d"*.xcodeproj   | head -1)"; break
+				fi
+			  done < <(ls -1d */ 2>/dev/null || true)
+			fi
+			
+			[ -n "$Project_Path" ] || { echo "[ERR] 未找到 .xcworkspace 或 .xcodeproj"; exit 1; }
+			
+			base="${Project_Path##*/}"            # 去前缀路径
+			Project_Kind="${base##*.}"            # xcworkspace / xcodeproj
+			Project_Name="${base%.*}"             # 去后缀
+			echo "[INFO] Project_Path=$Project_Path"
+			echo "[INFO] Project_Kind=$Project_Kind"
+			echo "[INFO] Project_Name=$Project_Name"
+		
+		# —— 在解析完 profile 的 Name/UUID/TEAMID/BUNDLEID 之后立刻兜底 —— 
+		# 例如：NAME、UUID、TEAMID、BUNDLEID 都已从 $PLIST 取到
+		: "${CPROVISIONING_PROFILE_NAME:=$NAME}"   # 修复 set -u 下未赋值就使用的问题
+		: "${DESTINATION:=generic/platform=iOS}"    # 如果前面没判定平台，给个默认
+		
+		echo "[ENV] CPROVISIONING_PROFILE_NAME=$CPROVISIONING_PROFILE_NAME"
+		echo "[ENV] DESTINATION=$DESTINATION"
+		
+		# —— 一次性抓 list 输出 —— 
+		echo "[LIST] run xcodebuild -list from $Project_Kind"
+		if [[ "$Project_Kind" == "xcworkspace" ]]; then
+		  RAW_LIST=$(xcodebuild -list -workspace "$Project_Path" 2>/dev/null || true)
+		else
+		  RAW_LIST=$(xcodebuild -list -project   "$Project_Path" 2>/dev/null || true)
+		fi
+		
+		echo "[LIST] raw >>>"
+		printf '%s\n' "$RAW_LIST" | sed -e 's/^/  | /'
+		echo "[LIST] <<< end"
+		
+		# —— 解析 Schemes（忽略前导空格、去回车、去掉空行），再过滤 *Tests —— 
+		SCHEMES=$(
+		  printf '%s\n' "$RAW_LIST" \
+		  | tr -d '\r' \
+		  | awk '
+			  /^[[:space:]]*Schemes:/ {inlist=1; next}
+			  inlist && /^[[:space:]]*$/ {inlist=0}
+			  inlist { sub(/^[[:space:]]+/, "", $0); print }
+			'
+		)
+		echo "[LIST] parsed schemes:"
+		printf '  - %s\n' $SCHEMES
+		
+		SCHEME_CAND=()
+		while IFS= read -r s; do
+		  s="$(echo "$s" | xargs)"
+		  [[ -n "$s" ]] && SCHEME_CAND+=("$s")
+		done < <(printf '%s\n' "$SCHEMES" | grep -v 'Tests$' || true)
+		
+		# 若全被过滤掉，则回退到原始列表
+		if [[ ${#SCHEME_CAND[@]} -eq 0 ]]; then
+		  while IFS= read -r s; do
+			s="$(echo "$s" | xargs)"
+			[[ -n "$s" ]] && SCHEME_CAND+=("$s")
+		  done < <(printf '%s\n' "$SCHEMES")
+		fi
+		
+		echo "[LIST] scheme candidates:"
+		if [[ ${#SCHEME_CAND[@]} -gt 0 ]]; then
+		  printf '  - %s\n' "${SCHEME_CAND[@]}"
+		else
+		  echo "  - <none>"
+		fi
+		[ ${#SCHEME_CAND[@]} -gt 0 ] || { echo "[ERR] 未找到任何 Scheme"; exit 1; }
+		
+		# 优先与工程同名，否则取第一个
+		auto_scheme="${SCHEME_CAND[0]}"
+		for s in "${SCHEME_CAND[@]}"; do
+		  if [[ "$s" == "$Project_Name" ]]; then auto_scheme="$s"; break; fi
+		done
+		: "${project_scheme:=$auto_scheme}"
+		echo "[INFO] project_scheme=$project_scheme"
+		
+		# —— 解析 Build Configurations（同一份 RAW_LIST） —— 
+		CFGS=$(
+		  printf '%s\n' "$RAW_LIST" \
+		  | tr -d '\r' \
+		  | awk '
+			  /^[[:space:]]*Build Configurations:/ {inlist=1; next}
+			  inlist && /^[[:space:]]*If no build configuration/ {inlist=0}
+			  inlist { sub(/^[[:space:]]+/, "", $0); print }
+			'
+		)
+		echo "[LIST] parsed configurations:"
+		printf '%s\n' "$CFGS" | sed -e 's/^/  - /'
+		
+		CFG_CAND=()
+		while IFS= read -r c; do
+		  c="$(echo "$c" | xargs)"
+		  [[ -n "$c" ]] && CFG_CAND+=("$c")
+		done < <(printf '%s\n' "$CFGS")
+		
+		if [[ ${#CFG_CAND[@]} -eq 0 ]]; then
+		  echo "[WARN] 未解析到 Build Configurations，回退到 Debug"
+		  CFG_CAND=("Debug")
+		fi
+		auto_cfg="${CFG_CAND[0]}"
+		for c in "${CFG_CAND[@]}"; do
+		  if [[ "$c" == "Debug" ]]; then auto_cfg="$c"; break; fi
+		done
+		: "${Configuration:=$auto_cfg}"
+		echo "[INFO] Configuration=$Configuration"
+		
+		#自动探测 DESTINATION
+			declare -a SRC_OPTS=()
+			if [[ "$Project_Kind" == "xcworkspace" ]]; then
+			  project_workspace="$Project_Path"
+			  SRC_OPTS=(-workspace "$project_workspace")
+			else
+			  project_proj="$Project_Path"
+			  SRC_OPTS=(-project "$project_proj")
+			fi
+		
+			echo "[AUTO] probing destinations for scheme: $project_scheme"
+			RAW_DEST=$(xcodebuild "${SRC_OPTS[@]}" -scheme "$project_scheme" -showdestinations 2>/dev/null || true)
+			
+			echo "[AUTO] raw -showdestinations >>>"
+			printf '%s\n' "$RAW_DEST" | sed -e 's/^/  | /'
+			echo "[AUTO] <<< end"
+			
+			DESTINATION=""
+			
+			# 1) 先找“泛化真机”目的地（generic），按优先级 visionOS -> iOS -> macOS
+			if printf '%s\n' "$RAW_DEST" | grep -Eq 'platform:[[:space:]]*visionOS([,} ]|$)'; then
+			  DESTINATION="generic/platform=visionOS"
+			elif printf '%s\n' "$RAW_DEST" | grep -Eq 'platform:[[:space:]]*iOS([,} ]|$)'; then
+			  DESTINATION="generic/platform=iOS"
+			elif printf '%s\n' "$RAW_DEST" | grep -Eq 'platform:[[:space:]]*macOS([,} ]|$)'; then
+			  DESTINATION="generic/platform=macOS"
+			fi
+			
+			# 2) 如果没有 generic，就挑一个带 id 的具体目的地（优先 visionOS 模拟器）
+			if [ -z "$DESTINATION" ]; then
+			  sim_id=$(printf '%s\n' "$RAW_DEST" \
+						 | awk -F'[{},]' '/platform:[[:space:]]*visionOS Simulator/{
+							  for(i=1;i<=NF;i++){
+								if($i ~ /id:/){gsub(/^[[:space:]]*id:[[:space:]]*/,"",$i); print $i; exit}
+							  }
+						   }' | head -1)
+			  if [ -n "$sim_id" ]; then
+				DESTINATION="id=$sim_id"
+			  fi
+			fi
+			
+			# 3) 还没有的话，挑任意一个 id
+			if [ -z "$DESTINATION" ]; then
+			  any_id=$(printf '%s\n' "$RAW_DEST" \
+						 | awk -F'[{},]' '/id:/{
+							  for(i=1;i<=NF;i++){
+								if($i ~ /id:/){gsub(/^[[:space:]]*id:[[:space:]]*/,"",$i); print $i; exit}
+							  }
+						   }' | head -1)
+			  if [ -n "$any_id" ]; then
+				DESTINATION="id=$any_id"
+			  fi
+			fi
+			
+			# 4) 最后兜底：用 profile 的平台提示；再不行就给 visionOS 作为最终兜底
+			: "${DESTINATION:=${DESTINATION_HINT:-}}"
+			: "${DESTINATION:=generic/platform=visionOS}"
+			
+			echo "[AUTO] using destination: $DESTINATION"
+		
+		
+		
+		# —— 这些变量若未定义，这里统一给兜底，避免 set -u 触发 ——
+		echo "[INFO] WORKSPACE=$WORKSPACE"
+		
+		build_dir="${build_dir:-"${WORKSPACE:-$PWD}/build"}"
+		export_path="${export_path:-"$HOME/project/build/${Project_Name}"}"
+		archive_path="${archive_path:-"${build_dir}/${project_scheme}.xcarchive"}"
+		exportOptionsPlist="${exportOptionsPlist:-"${build_dir}/${project_scheme}.plist"}"
+		export DEVELOPMENT_TEAM="$TEAMID"
+		
+		
+		# —— 生成 exportOptionsPlist（用 profile 名称绑定） —— 
+		mkdir -p "${build_dir}" "${export_path}"
+		cat > "${exportOptionsPlist}" <<PL
+		<?xml version="1.0" encoding="UTF-8"?>
+		<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+		<plist version="1.0"><dict>
+		  <key>signingStyle</key><string>manual</string>
+		  <key>teamID</key><string>${TEAMID}</string>      
+		  <key>method</key><string>${PROFILE_KIND}</string>
+		  <key>signingCertificate</key><string>${CERT_KIND}</string>
+		  <key>provisioningProfiles</key><dict>
+			<key>${BUNDLEID}</key><string>${CPROVISIONING_PROFILE_NAME}</string>
+		  </dict>
+		  <key>stripSwiftSymbols</key><true/>
+		  <key>compileBitcode</key><true/>
+		</dict></plist>
+PL
+		
+		# —— 选择 workspace / project 源参数 —— 
+		
+		SRC_OPTS=()
+		if [[ "$Project_Kind" == "xcworkspace" ]]; then
+		  project_workspace="$Project_Path"
+		  SRC_OPTS=(-workspace "$project_workspace")
+		else
+		  project_proj="$Project_Path"
+		  SRC_OPTS=(-project "$project_proj")
+		fi
+		
+
+		
+		# —— 构建 —— 
+		echo " 构建 Archive "不签名
+		xcodebuild \
+		  "${SRC_OPTS[@]}" \
+		  -scheme "$project_scheme" \
+		  -configuration "$Configuration" \
+		  clean archive \
+		  -archivePath "$archive_path" \
+		  -destination "$DESTINATION" \
+		  DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+		  CODE_SIGNING_ALLOWED=NO \
+		 # CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
+		 # PRODUCT_BUNDLE_IDENTIFIER="$BUNDLEID" \
+		 # PROVISIONING_PROFILE_SPECIFIER="$CPROVISIONING_PROFILE_NAME" \
+		  -allowProvisioningUpdates \
+		  -allowProvisioningDeviceRegistration \
+		  -UseModernBuildSystem=NO \
+		  -quiet		
+		
+		
+		
+		echo " 导出 IPA"
+		xcodebuild -exportArchive \
+		  -archivePath "$archive_path" \
+		  -exportOptionsPlist "$exportOptionsPlist" \
+		  -exportPath "$export_path" \
+		  -quiet
+		
+		echo "[BUILD] exported:"
+		ls -lh "$export_path" || true
+		'''
+		  }
+		
+		 //  5) 在这个 stage 的 post 里收集产物（仍在 macOS 节点上）"	
+		  post {
+			always {
+			  script {
+			  withCredentials([sshUserPrivateKey(credentialsId: '137ssh',
+                                   keyFileVariable: 'SSH_KEY',
+                                   usernameVariable: 'SSH_USER')]) {
+		sh '''#!/bin/bash
+		set -euo pipefail
+		
+		REMOTE="17.87.2.137"
+		REMOTE_BASE="/Users/mdsadmin/Documents"
+		RUN_DIR="${JOB_BASE_NAME}#${BUILD_NUMBER}"
+		REMOTE_DIR="${REMOTE_BASE}/${RUN_DIR}"
+		
+		echo "读取构建阶段写下的变量；做兜底，避免 set -u 触发"		
+		[ -f BuildVariable ] && source BuildVariable || true
+		export_path=${export_path:-}
+		archive_path=${archive_path:-}
+		project_scheme=${project_scheme:-app}
+		
+		echo "[REMOTE] mkdir -p ${REMOTE_DIR}"
+		ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+			"$SSH_USER@$REMOTE" "mkdir -p \"${REMOTE_DIR}\""
+		
+		echo "传 ipa"
+		if [ -n "$export_path" ] && ls "$export_path"/*.ipa >/dev/null 2>&1; then
+		  echo "[UPLOAD] ipa -> ${REMOTE}:${REMOTE_DIR}"
+		  scp -i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+			  "$export_path"/*.ipa \
+			  "$SSH_USER@$REMOTE:${REMOTE_DIR}/"
+		else
+		  echo "[UPLOAD] no ipa found under ${export_path}"
+		fi
+		
+		echo " .xcarchive（用 rsync 更快且可断点续传） "
+		if [ -n "$archive_path" ] && [ -d "$archive_path" ]; then
+		  echo "[UPLOAD] xcarchive -> ${REMOTE}:${REMOTE_DIR}/${project_scheme}.xcarchive/"
+		  rsync -a \
+			-e "ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" \
+			"$archive_path"/ \
+			"$SSH_USER@$REMOTE:${REMOTE_DIR}/${project_scheme}.xcarchive/"
+		else
+		  echo "[UPLOAD] no xcarchive dir at ${archive_path}"
+		fi
+		
+		echo "附带上传变量文件，便于远端排查"
+		[ -f BuildVariable ] && scp -i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+			BuildVariable "$SSH_USER@$REMOTE:${REMOTE_DIR}/" || true
+		
+		echo "[DONE] artifacts uploaded to ${REMOTE}:${REMOTE_DIR}"
+		'''
+		}
+			  }
+			}
+		  }
+		}
+      }
+  
+  
+  
+  post {
+    always {   
+    	 withKubeConfig([credentialsId: env.KCFG_ID]) {
+    	   sh "kubectl -n ci delete pod macos-build-${BUILD_NODE} --ignore-not-found"
+       	   sh "kubectl -n ci delete secret jenkins-macos-${BUILD_NODE} --ignore-not-found"
+      }
+    }
+  }
+}
