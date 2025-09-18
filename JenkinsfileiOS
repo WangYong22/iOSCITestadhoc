@@ -216,24 +216,40 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 	  agent { label "${env.BUILD_NODE}" }
 	
 	  steps {
-	    withCredentials([string(credentialsId: 'macos-login-keychain-pass', variable: 'KEYCHAIN_PASS')]) {
+	   withCredentials([
+		  string(credentialsId: 'macos-login-keychain-pass', variable: 'KEYCHAIN_PASS'),
+		  string(credentialsId: 'dist-p12-pass',             variable: 'P12_PASS')
+		]) {
 		  sh '''#!/bin/bash
 		  set -euo pipefail
-		  set +u
+		
 		  LOGIN_KC="${HOME}/Library/Keychains/login.keychain-db"
-		  KEYCHAIN_PASS="${KEYCHAIN_PASS:-}"
-		  set -u
+		  P12_PATH="${WORKSPACE}/certs/ios_dist.p12"   # 如果已做自动发现，这里改为自动发现的变量
 		
-		  : "${KEYCHAIN_PASS:?KEYCHAIN_PASS is empty — configure Jenkins credential 'macos-login-keychain-pass'}"
+		  : "${KEYCHAIN_PASS:?missing macos-login-keychain-pass}"
+		  : "${P12_PASS:?missing dist-p12-pass}"
 		
-		  [ -f "$LOGIN_KC" ] || security create-keychain -p "${KEYCHAIN_PASS}" "$LOGIN_KC"
-		  security unlock-keychain -p "${KEYCHAIN_PASS}" "$LOGIN_KC"
+		  # 1) 准备钥匙串
+		  [ -f "$LOGIN_KC" ] || security create-keychain -p "$KEYCHAIN_PASS" "$LOGIN_KC"
+		  security unlock-keychain -p "$KEYCHAIN_PASS" "$LOGIN_KC"
 		  security default-keychain -s "$LOGIN_KC"
 		  security list-keychains -d user -s "$LOGIN_KC"
-		  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASS}" "$LOGIN_KC"
+		  # 可选：避免很快上锁
+		  # security set-keychain-settings -lut 3600 "$LOGIN_KC"
+		
+		  # 2) 导入 p12（带私钥）
+		  [ -f "$P12_PATH" ] || { echo "[ERR] p12 not found: $P12_PATH"; exit 2; }
+		  echo "[CERT] import p12 -> $LOGIN_KC"
+		  security import "$P12_PATH" -k "$LOGIN_KC" -P "$P12_PASS" -A
+		
+		  # 3) 允许 codesign/xcodebuild 无交互访问私钥（一定要在导入后再来一次）
+		  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$LOGIN_KC"
+		
+		  echo "[CERT] codesigning identities:"
+		  security find-identity -v -p codesigning || true
 		  '''
 		}
-	  
+		
 		// 1) 连通性
 		sh '''#!/bin/bash
 		set -euo pipefail
@@ -386,7 +402,7 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		  *)             DESTINATION_HINT="" ;;
 		esac
 		
-		echo "[PP] kind=$PROFILE_KIND  platform_hint=${DESTINATION_HINT:-none}  cert=$CERT_KIND"
+		echo "[PP] kind=$METHOD  platform_hint=${DESTINATION_HINT:-none}  cert=$CERT_KIND"
 		
 		# 安装 profile
 		DEST_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
@@ -647,11 +663,11 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		
 		# —— 写回 BuildVariable，供 post 阶段读取 ----
         cat > BuildVariable <<EOF
-project_scheme=${project_scheme}
-export_path=${export_path}
-build_dir=${build_dir}
-archive_path=${archive_path}
-exportOptionsPlist=${exportOptionsPlist}
+	    	project_scheme=${project_scheme}
+			export_path=${export_path}
+			build_dir=${build_dir}
+			archive_path=${archive_path}
+			exportOptionsPlist=${exportOptionsPlist}
 EOF
 
 		echo "==[DEBUG] wrote BuildVariable =="
