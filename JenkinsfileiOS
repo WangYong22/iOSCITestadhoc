@@ -154,42 +154,43 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 
             kubectl -n ci apply -f rendered.yaml
           """
-          
-          sh '''
-            kubectl -n ci wait --for=condition=Initialized --timeout=120s pod/macos-build-${BUILD_NODE} || true
+      
+     //下面的内容是排查 Pod 异常   
+     //     sh '''
+     //       kubectl -n ci wait --for=condition=Initialized --timeout=120s pod/macos-build-${BUILD_NODE} || true
 
-            kubectl -n ci describe pod macos-build-${BUILD_NODE} | sed -n '/Events:/,$p'
-            kubectl -n ci get pod macos-build-${BUILD_NODE} -o wide || true
+     //       kubectl -n ci describe pod macos-build-${BUILD_NODE} | sed -n '/Events:/,$p'
+     //       kubectl -n ci get pod macos-build-${BUILD_NODE} -o wide || true
 
-            kubectl -n ci get pod macos-build-${BUILD_NODE} -o json \
-              | jq '.spec.containers[] | select(.name=="jenkins-bootstrap") | {envFrom: .envFrom, env: .env}' || true
+     //      kubectl -n ci get pod macos-build-${BUILD_NODE} -o json \
+     //        | jq '.spec.containers[] | select(.name=="jenkins-bootstrap") | {envFrom: .envFrom, env: .env}' || true
 
-            kubectl -n ci get secret jenkins-macos-${BUILD_NODE} -o jsonpath='{.data.JENKINS_URL}' | base64 -d; echo
-            kubectl -n ci get secret jenkins-macos-${BUILD_NODE} -o jsonpath='{.data.JENKINS_SECRET}' | base64 -d | awk '{print "LEN=" length}'
+     //       kubectl -n ci get secret jenkins-macos-${BUILD_NODE} -o jsonpath='{.data.JENKINS_URL}' | base64 -d; echo
+     //       kubectl -n ci get secret jenkins-macos-${BUILD_NODE} -o jsonpath='{.data.JENKINS_SECRET}' | base64 -d | awk '{print "LEN=" length}'
 
         
-          '''
-          sh '''
-            POD=macos-build-${BUILD_NODE}
+     //     '''
+     //     sh '''
+     //       POD=macos-build-${BUILD_NODE}
 
-            # 每个容器的等待原因/信息
-            kubectl -n ci get pod "$POD" -o jsonpath='{range .status.containerStatuses[*]}{.name}{" => "}{.state.waiting.reason}{" : "}{.state.waiting.message}{"\n"}{end}' || true
-            echo
+     //         # 每个容器的等待原因/信息
+     //       kubectl -n ci get pod "$POD" -o jsonpath='{range .status.containerStatuses[*]}{.name}{" => "}{.state.waiting.reason}{" : "}{.state.waiting.message}{"\n"}{end}' || true
+     //       echo
 
-            # 只看 jenkins-bootstrap 的详细等待对象
-            kubectl -n ci get pod "$POD" -o json \
-              | jq '.status.containerStatuses[] | select(.name=="jenkins-bootstrap")' || true
+     //          # 只看 jenkins-bootstrap 的详细等待对象
+     //       kubectl -n ci get pod "$POD" -o json \
+     //          | jq '.status.containerStatuses[] | select(.name=="jenkins-bootstrap")' || true
 
-            # 相关事件（按时间排序）
-            kubectl -n ci get events --field-selector involvedObject.name="$POD" --sort-by=.lastTimestamp || true
-          '''
-          sh '''
-            kubectl -n ci get pod macos-build-${BUILD_NODE} -o yaml \
-              | sed -n "/containerStatuses:/,/^$/p" || true
-          '''
-          sh """
-            kubectl -n ci get pod macos-build-${BUILD_NODE} -o wide || true
-          """
+     //          # 相关事件（按时间排序）
+     //        kubectl -n ci get events --field-selector involvedObject.name="$POD" --sort-by=.lastTimestamp || true
+     //      '''
+     //      sh '''
+     //        kubectl -n ci get pod macos-build-${BUILD_NODE} -o yaml \
+     //          | sed -n "/containerStatuses:/,/^$/p" || true
+     //      '''
+     //      sh """
+     //        kubectl -n ci get pod macos-build-${BUILD_NODE} -o wide || true
+     //      """
         }
       }
     }
