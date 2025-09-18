@@ -387,18 +387,38 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		  # 判定导出 method 与证书类型
 		  if [ "$GET_TASK_ALLOW" = "true" ]; then
 		    METHOD="development"
-		    CERT_KIND="Apple Development"
 		  else
 		    if [ "$PROVISIONS_ALL" = "true" ]; then
 		      METHOD="enterprise"
- 		   elif $HAS_DEVICES; then
- 		     METHOD="ad-hoc"
- 		   else
- 		     METHOD="app-store"
-  		  fi
-  		  CERT_KIND="Apple Distribution"
+ 		    elif $HAS_DEVICES; then
+ 		      METHOD="ad-hoc"
+ 		    else
+ 		      METHOD="app-store"
+  		    fi	 
 		  fi
 
+		  # 已在前文解析得到：PP_CERT_CN（从 profile 的 DeveloperCertificates 取 CN）
+	  	  # 例：PP_CERT_CN="iPhone Distribution: Yong Wang (64KDUQCYEB)"
+		
+		  ALL_IDS="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+		  echo "[DBG] identities raw:"; printf '%s\n' "$ALL_IDS" | sed 's/^/  /'
+		
+		  # 仅按 CN 精确匹配（完全等于）
+		  CODE_SIGN_IDENTITY="$(
+		    printf '%s\n' "$ALL_IDS" \
+		    | awk -v cn="$PP_CERT_CN" -F'"' '$2==cn {print $2; exit}'
+		  )"
+		
+		  if [ -z "$CODE_SIGN_IDENTITY" ]; then
+		    echo "[ERR] 找不到与 profile 中证书 CN 完全一致的 codesigning identity"
+		    echo "      期望 CN: '$PP_CERT_CN'"
+		    echo "      请确认该证书(含私钥)已导入并位于当前 login.keychain 中。"
+		    exit 1
+		  fi
+		
+		  echo "[CERT] picked identity: $CODE_SIGN_IDENTITY"
+		
+		
 		  echo "[PP] method=$METHOD  cert=$CERT_KIND  hasDevices=$HAS_DEVICES  allDevices=$PROVISIONS_ALL"		
 
 
@@ -421,54 +441,52 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		# 选择匹配证书（需要你已导入带私钥证书并解锁 login 钥匙串）
 		echo "[CHK] E: pick signing identity (robust matcher)"
 
-		# 可选：显式指定证书可读名称（最可靠）
-		# export CERT_CN='Apple Development: Yong Wang (LFBT5QQQ6J)'
 		
-		ALL_IDS="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-		echo "[DBG] identities raw:"
-		printf '%s\n' "$ALL_IDS" | sed -e 's/^/  /'
-		
-		pick_by_cn() {
-		  # 精确用证书可读名称匹配（CN）
-		  printf '%s\n' "$ALL_IDS" | awk -v cn="$CERT_CN" -F'"' '$0 ~ cn {print $2; exit}'
-		}
-		
-		pick_by_kind_team() {
-		  # 同时匹配证书类型 + (TEAMID) —— 某些系统输出里没有(TEAMID)，可能匹配不到
-		  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -v t="$TEAMID" -F'"' \
-			  'index($0,k) && index($0,"(" t ")") {print $2; exit}'
-		}
-		
-		pick_by_kind_only() {
-		  # 只匹配证书类型（如 Apple Development），取第一张
-		  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -F'"' \
-			  'index($0,k) {print $2; exit}'
-		}
-		
-		CODE_SIGN_IDENTITY=""
-		
-		if [ -n "${CERT_CN:-}" ]; then
-		  CODE_SIGN_IDENTITY="$(pick_by_cn)"
-		  echo "[DBG] pick_by_cn => ${CODE_SIGN_IDENTITY:-<empty>}"
-		fi
-		
-		if [ -z "$CODE_SIGN_IDENTITY" ]; then
-		  CODE_SIGN_IDENTITY="$(pick_by_kind_team)"
-		  echo "[DBG] pick_by_kind_team => ${CODE_SIGN_IDENTITY:-<empty>}"
-		fi
-		
-		if [ -z "$CODE_SIGN_IDENTITY" ]; then
-		  CODE_SIGN_IDENTITY="$(pick_by_kind_only)"
-		  echo "[DBG] pick_by_kind_only => ${CODE_SIGN_IDENTITY:-<empty>}"
-		fi
-		
-		if [ -z "$CODE_SIGN_IDENTITY" ]; then
-		  echo "[ERR] 仍然找不到匹配证书（kind=$CERT_KIND, team=$TEAMID）。"
-		  echo "      你可以显式指定： export CERT_CN='Apple Development: Yong Wang (LFBT5QQQ6J)'"
-		  exit 1
-		fi
-		
-		echo "[CERT] picked: $CODE_SIGN_IDENTITY"
+			ALL_IDS="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+			echo "[DBG] identities raw:"
+			printf '%s\n' "$ALL_IDS" | sed -e 's/^/  /'
+			
+			pick_by_cn() {
+			  # 精确用证书可读名称匹配（CN）
+			  printf '%s\n' "$ALL_IDS" | awk -v cn="$CERT_CN" -F'"' '$0 ~ cn {print $2; exit}'
+			}
+			
+			pick_by_kind_team() {
+			  # 同时匹配证书类型 + (TEAMID) —— 某些系统输出里没有(TEAMID)，可能匹配不到
+			  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -v t="$TEAMID" -F'"' \
+				  'index($0,k) && index($0,"(" t ")") {print $2; exit}'
+			}
+			
+			pick_by_kind_only() {
+			  # 只匹配证书类型（如 Apple Development），取第一张
+			  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -F'"' \
+				  'index($0,k) {print $2; exit}'
+			}
+			
+			CODE_SIGN_IDENTITY=""
+			
+			if [ -n "${CERT_CN:-}" ]; then
+			  CODE_SIGN_IDENTITY="$(pick_by_cn)"
+			  echo "[DBG] pick_by_cn => ${CODE_SIGN_IDENTITY:-<empty>}"
+			fi
+			
+			if [ -z "$CODE_SIGN_IDENTITY" ]; then
+			  CODE_SIGN_IDENTITY="$(pick_by_kind_team)"
+			  echo "[DBG] pick_by_kind_team => ${CODE_SIGN_IDENTITY:-<empty>}"
+			fi
+			
+			if [ -z "$CODE_SIGN_IDENTITY" ]; then
+			  CODE_SIGN_IDENTITY="$(pick_by_kind_only)"
+			  echo "[DBG] pick_by_kind_only => ${CODE_SIGN_IDENTITY:-<empty>}"
+			fi
+			
+			if [ -z "$CODE_SIGN_IDENTITY" ]; then
+			  echo "[ERR] 仍然找不到匹配证书（kind=$CERT_KIND, team=$TEAMID）。"
+			  echo "      你可以显式指定： export CERT_CN='Apple Development: Yong Wang (LFBT5QQQ6J)'"
+			  exit 1
+			fi
+			
+			echo "[CERT] picked: $CODE_SIGN_IDENTITY"
 		
 		
 		# ====== 自动探测 Xcode 工程 / Scheme / Configuration ======
