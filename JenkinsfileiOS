@@ -352,14 +352,32 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		echo "[PP] Platform[0]=$PLATFORM0"
 		
 		# 判定证书类型与目的平台
-		if [ "$GET_TASK_ALLOW" = "true" ]; then
-		  PROFILE_KIND="debugging"
-		  CERT_KIND="Apple Development"
-		else
-		  PROFILE_KIND="distribution"
-		  CERT_KIND="Apple Distribution"
-		fi
-		
+                  # 读取可选键
+		  PROVISIONS_ALL=$(/usr/libexec/PlistBuddy -c 'Print :ProvisionsAllDevices' "$PLIST" 2>/dev/null || echo "false")
+		  if /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$PLIST" >/dev/null 2>&1; then
+		    HAS_DEVICES=true
+		  else
+		    HAS_DEVICES=false
+		  fi
+
+		  # 判定导出 method 与证书类型
+		  if [ "$GET_TASK_ALLOW" = "true" ]; then
+		    METHOD="development"
+		    CERT_KIND="Apple Development"
+		  else
+		    if [ "$PROVISIONS_ALL" = "true" ]; then
+		      METHOD="enterprise"
+ 		   elif $HAS_DEVICES; then
+ 		     METHOD="ad-hoc"
+ 		   else
+ 		     METHOD="app-store"
+  		  fi
+  		  CERT_KIND="Apple Distribution"
+		  fi
+
+		  echo "[PP] method=$METHOD  cert=$CERT_KIND  hasDevices=$HAS_DEVICES  allDevices=$PROVISIONS_ALL"		
+
+
 		# —— 不再在这里直接设置 DESTINATION；只做平台“提示” —— 
 		case "$(printf '%s' "${PLATFORM0:-}" | tr '[:upper:]' '[:lower:]')" in
 		  visionos|xros) DESTINATION_HINT="generic/platform=visionOS" ;;
@@ -648,7 +666,7 @@ EOF
 		<plist version="1.0"><dict>
 		  <key>signingStyle</key><string>manual</string>
 		  <key>teamID</key><string>${TEAMID}</string>      
-		  <key>method</key><string>${PROFILE_KIND}</string>
+		  <key>method</key><string>$${METHOD}</string>
 		  <key>signingCertificate</key><string>${CERT_KIND}</string>
 		  <key>provisioningProfiles</key><dict>
 			<key>${BUNDLEID}</key><string>${CPROVISIONING_PROFILE_NAME}</string>
@@ -680,11 +698,12 @@ PL
 		  clean archive \
 		  -archivePath "$archive_path" \
 		  -destination "$DESTINATION" \
-		  DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
-		  CODE_SIGNING_ALLOWED=NO \
-		 # CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
-		 # PRODUCT_BUNDLE_IDENTIFIER="$BUNDLEID" \
-		 # PROVISIONING_PROFILE_SPECIFIER="$CPROVISIONING_PROFILE_NAME" \
+		  CODE_SIGN_STYLE=Manual \
+		  DEVELOPMENT_TEAM="$TEAMID" \
+		 # CODE_SIGNING_ALLOWED=NO \
+		  CODE_SIGN_IDENTITY="Apple Distribution" \
+		  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLEID" \
+		  PROVISIONING_PROFILE_SPECIFIER="$CPROVISIONING_PROFILE_NAME" \
 		  -allowProvisioningUpdates \
 		  -allowProvisioningDeviceRegistration \
 		  -UseModernBuildSystem=NO \
