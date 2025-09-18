@@ -413,10 +413,9 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 			  printf '%s' "$PP_CERT_B64" | base64 -D >"$tmpder" 2>/dev/null || \
 			  printf '%s' "$PP_CERT_B64" | base64 -d >"$tmpder" 2>/dev/null
 			
-			  PP_CERT_CN="$(
-				/usr/bin/openssl x509 -inform der -noout -subject -nameopt RFC2253 -in "$tmpder" 2>/dev/null \
-				| sed -n 's/.*CN=\([^,]*\).*/\1/p'
-			  )"
+			  # 从 DER 证书拿到 subject，然后用 sed 抠 CN
+				PP_CERT_SUBJECT="$(/usr/bin/openssl x509 -inform der -noout -subject -nameopt RFC2253 -in "$tmpder" 2>/dev/null)"
+				PP_CERT_CN="$(printf '%s\n' "$PP_CERT_SUBJECT" | sed -n -E 's/.*CN=([^,]+).*/\1/p')"
 			  rm -f "$tmpder"
 			fi
 			
