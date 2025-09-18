@@ -30,19 +30,19 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		154458F22E6F09B900861EEE /* iOSCITest */ = {
+		154458F22E6F09B900861EEE /* iOSCIadhocTest */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = iOSCITest;
+			path = iOSCIadhocTest;
 			sourceTree = "<group>";
 		};
-		154459002E6F09BB00861EEE /* iOSCITestTests */ = {
+		154459002E6F09BB00861EEE /* iOSCIadhocTestTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = iOSCITestTests;
+			path = iOSCIadhocTestTests;
 			sourceTree = "<group>";
 		};
-		1544590A2E6F09BB00861EEE /* iOSCITestUITests */ = {
+		1544590A2E6F09BB00861EEE /* iOSCIadhocTestUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = iOSCITestUITests;
+			path = iOSCIadhocTestUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -75,9 +75,9 @@
 		154458E72E6F09B900861EEE = {
 			isa = PBXGroup;
 			children = (
-				154458F22E6F09B900861EEE /* iOSCITest */,
-				154459002E6F09BB00861EEE /* iOSCITestTests */,
-				1544590A2E6F09BB00861EEE /* iOSCITestUITests */,
+				154458F22E6F09B900861EEE /* iOSCIadhocTest */,
+				154459002E6F09BB00861EEE /* iOSCIadhocTestTests */,
+				1544590A2E6F09BB00861EEE /* iOSCIadhocTestUITests */,
 				154458F12E6F09B900861EEE /* Products */,
 			);
 			sourceTree = "<group>";
@@ -108,7 +108,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				154458F22E6F09B900861EEE /* iOSCITest */,
+				154458F22E6F09B900861EEE /* iOSCIadhocTest */,
 			);
 			name = iOSCITest;
 			packageProductDependencies = (
@@ -131,7 +131,7 @@
 				154458FF2E6F09BB00861EEE /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				154459002E6F09BB00861EEE /* iOSCITestTests */,
+				154459002E6F09BB00861EEE /* iOSCIadhocTestTests */,
 			);
 			name = iOSCITestTests;
 			packageProductDependencies = (
@@ -154,7 +154,7 @@
 				154459092E6F09BB00861EEE /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				1544590A2E6F09BB00861EEE /* iOSCITestUITests */,
+				1544590A2E6F09BB00861EEE /* iOSCIadhocTestUITests */,
 			);
 			name = iOSCITestUITests;
 			packageProductDependencies = (
@@ -186,7 +186,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 154458EB2E6F09B900861EEE /* Build configuration list for PBXProject "iOSCITest" */;
+			buildConfigurationList = 154458EB2E6F09B900861EEE /* Build configuration list for PBXProject "iOSCIadhocTest" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -531,7 +531,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		154458EB2E6F09B900861EEE /* Build configuration list for PBXProject "iOSCITest" */ = {
+		154458EB2E6F09B900861EEE /* Build configuration list for PBXProject "iOSCIadhocTest" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1544590F2E6F09BC00861EEE /* Debug */,

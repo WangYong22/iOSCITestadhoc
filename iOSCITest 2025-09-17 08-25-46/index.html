@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>iOSCITest AdHoc 安装</title>
+  <style>body{font-family:-apple-system,Helvetica,Arial;margin:24px;line-height:1.6}</style>
+</head>
+<body>
+  <h2>iOSCITest AdHoc 安装</h2>
+  <ol>
+    <li>请使用 <b>iPhone/iPad 上的 Safari</b> 打开本页。</li>
+    <li>确保设备 UDID 已加入 Ad Hoc Profile。</li>
+    <li>点击下面按钮开始安装：</li>
+  </ol>
+  <p>
+    <a id="install" href="#">⚡ 安装 MyApp</a>
+  </p>
+  <script>
+    const manifest = encodeURIComponent('https://vvv.wy2wy.tk:4433/ios/myapp/manifest.plist'); // 改成你的
+    const link = 'itms-services://?action=download-manifest&url=' + manifest;
+    const a = document.getElementById('install');
+    a.href = link;
+  </script>
+  <p style="color:#666;font-size:13px">若点击无反应：确认使用 Safari、HTTPS 有效证书，且设备 UDID 在 Ad Hoc 白名单中。</p>
+</body>
+</html>

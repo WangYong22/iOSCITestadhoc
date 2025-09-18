@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>iOSCITest.ipa</key>
+	<array>
+		<dict>
+			<key>architectures</key>
+			<array>
+				<string>arm64</string>
+			</array>
+			<key>buildNumber</key>
+			<string>1</string>
+			<key>certificate</key>
+			<dict>
+				<key>SHA1</key>
+				<string>718EABABD1A688BFDC992ECD3CBD060B1BB459BD</string>
+				<key>dateExpires</key>
+				<string>2026/9/16</string>
+				<key>type</key>
+				<string>iOS Distribution</string>
+			</dict>
+			<key>entitlements</key>
+			<dict>
+				<key>application-identifier</key>
+				<string>64KDUQCYEB.com.WangYong2.isocicd1</string>
+				<key>com.apple.developer.team-identifier</key>
+				<string>64KDUQCYEB</string>
+				<key>get-task-allow</key>
+				<false/>
+			</dict>
+			<key>name</key>
+			<string>iOSCITest.app</string>
+			<key>profile</key>
+			<dict>
+				<key>UUID</key>
+				<string>46e8fcb4-00c9-471b-baf8-4ba1013d2ec7</string>
+				<key>dateExpires</key>
+				<string>2026/9/17</string>
+				<key>name</key>
+				<string>iOS Team Ad Hoc Provisioning Profile: com.WangYong2.isocicd1</string>
+			</dict>
+			<key>team</key>
+			<dict>
+				<key>id</key>
+				<string>64KDUQCYEB</string>
+				<key>name</key>
+				<string>Yong Wang</string>
+			</dict>
+			<key>versionNumber</key>
+			<string>1.0</string>
+		</dict>
+	</array>
+</dict>
+</plist>
