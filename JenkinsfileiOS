@@ -400,28 +400,30 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		  # === 从 provisioning profile 中提取证书 CN（PP_CERT_CN）===
 			PP_CERT_CN=""
 			
-			# 取 DeveloperCertificates[0] 的 base64
+			# 抽出 DeveloperCertificates[0] 的 <data> ... </data>，拿到 base64
 			PP_CERT_B64=$(
 			  /usr/bin/plutil -extract DeveloperCertificates.0 xml1 -o - "$PLIST" 2>/dev/null \
-			  | sed -n 's:.*<data>\(.*\)</data>.*:\1:p' \
-			  | tr -d ' \t\r\n'
+			  | sed -n -E 's:.*<data>(.*)</data>.*:\1:p' \
+			  | tr -d '[:space:]'
 			)
 			
 			if [ -n "$PP_CERT_B64" ]; then
 			  tmpder="$(mktemp /tmp/_ppcert.XXXXXX.der)"
-			  # macOS 用 -D，部分环境也兼容 -d，这里都尝试一下
+			  # macOS 上 base64 解码有的是 -D，有的是 -d，这里两种都尝试
 			  printf '%s' "$PP_CERT_B64" | base64 -D >"$tmpder" 2>/dev/null || \
 			  printf '%s' "$PP_CERT_B64" | base64 -d >"$tmpder" 2>/dev/null
 			
-			  # 读取证书 subject 并提取 CN
-			  PP_CERT_CN="$(/usr/bin/openssl x509 -inform der -noout -subject -nameopt RFC2253 -in "$tmpder" 2>/dev/null \
-							 | sed -n 's/.*CN=\([^,]*\).*/\1/p')"
+			  PP_CERT_CN="$(
+				/usr/bin/openssl x509 -inform der -noout -subject -nameopt RFC2253 -in "$tmpder" 2>/dev/null \
+				| sed -n 's/.*CN=\([^,]*\).*/\1/p'
+			  )"
 			  rm -f "$tmpder"
 			fi
 			
 			echo "[PP] cert_cn=${PP_CERT_CN:-<empty>}"
+			: "${PP_CERT_CN:?Failed to extract certificate CN from provisioning profile}"
 			
-			# 若没取到，直接报错（你不需要兜底）
+			# 若没取到，直接报错（不需要兜底）
 			: "${PP_CERT_CN:?Failed to extract certificate CN from provisioning profile}"	
 			
 			
