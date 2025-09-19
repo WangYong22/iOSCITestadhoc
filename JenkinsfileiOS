@@ -835,7 +835,7 @@ PL
 		}
  
  stage('Publish IPAs to Web') {
-		  agent { label "macmain" }
+		  agent {label "${env.BUILD_NODE}" }
 		  environment {
 			WEB_HOST     = 'vvv.wy2wy.tk'
 			WEB_DIR      = '/var/www/ios/myapp'
