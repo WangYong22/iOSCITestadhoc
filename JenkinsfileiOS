@@ -836,6 +836,132 @@ PL
       }
   
   
+  stage('Publish IPAs to Web') {
+		  agent { label "macmain" }
+		  environment {
+			WEB_HOST     = 'vvv.wy2wy.tk'
+			WEB_DIR      = '/var/www/ios/myapp'
+			WEB_BASE_URL = 'https://vvv.wy2wy.tk/ios/myapp'
+		  }
+		  steps {
+			withCredentials([sshUserPrivateKey(credentialsId: 'webssh-key',
+											   keyFileVariable: 'SSH_KEY',
+											   usernameVariable: 'WEB_USER')]) {
+			  sh '''#!/bin/bash
+		set -euo pipefail
+		
+		# ---------- 读取上一阶段构建变量 ----------
+		set +u
+		[ -f BuildVariable ] && . BuildVariable || true
+		set -u
+		EXPORT_PATH="${export_path:-${EXPORT_PATH:-$PWD}}"
+		
+		echo "[PUB] EXPORT_PATH=$EXPORT_PATH"
+		[ -d "$EXPORT_PATH" ] || { echo "[ERR] export dir not found: $EXPORT_PATH"; exit 2; }
+		
+		# ---------- 函数：从 IPA 取基本信息 ----------
+		get_info_from_ipa() {
+		  local ipa="$1"
+		  local app_path info_xml
+		  app_path="$(zip -lf "$ipa" | awk '/Payload\\/.*\\.app\\/$/ {print $NF; exit}')"
+		  [ -n "$app_path" ] || { echo "[ERR] cannot find .app in $ipa"; return 2; }
+		  info_xml="$(mktemp /tmp/_Info.XXXXXX.xml)"
+		  unzip -p "$ipa" "${app_path}Info.plist" | plutil -convert xml1 -o "$info_xml" - 2>/dev/null
+		  BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_xml")
+		  VER_SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_xml" 2>/dev/null || echo "1.0")
+		  VER_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_xml" 2>/dev/null || echo "1")
+		  APP_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$info_xml" 2>/dev/null || \
+					 /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$info_xml" 2>/dev/null || echo "App")
+		  rm -f "$info_xml"
+		}
+		
+		# ---------- 收集 IPA ----------
+		shopt -s nullglob
+		mapfile -t IPAS < <(ls -1t "$EXPORT_PATH"/*.ipa 2>/dev/null || true)
+		shopt -u nullglob
+		[ ${#IPAS[@]} -gt 0 ] || { echo "[WARN] no IPA under $EXPORT_PATH"; exit 0; }
+		
+		PUB_DIR="$(mktemp -d /tmp/_ipa_pub.XXXXXX)"
+		trap 'rm -rf "$PUB_DIR"' EXIT
+		
+		# ---------- 为每个 IPA 生成 manifest + 复制 IPA ----------
+		i=0
+		for ipa in "${IPAS[@]}"; do
+		  ((i++))
+		  echo "[PUB] item#$i -> $ipa"
+		  get_info_from_ipa "$ipa"
+		
+		  base="$(basename "$ipa")"
+		  name_noext="${base%.ipa}"
+		  plist_name="${name_noext}.plist"
+		
+		  ipa_url="${WEB_BASE_URL}/${base}"
+		  plist_url="${WEB_BASE_URL}/${plist_name}"
+		
+		  cat > "${PUB_DIR}/${plist_name}" <<PL
+		<?xml version="1.0" encoding="UTF-8"?>
+		<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+		<plist version="1.0"><dict>
+		 <key>items</key><array><dict>
+		  <key>assets</key><array><dict>
+			<key>kind</key><string>software-package</string>
+			<key>url</key><string>${ipa_url}</string>
+		  </dict></array>
+		  <key>metadata</key><dict>
+			<key>bundle-identifier</key><string>${BUNDLE_ID}</string>
+			<key>bundle-version</key><string>${VER_BUILD}</string>
+			<key>kind</key><string>software</string>
+			<key>title</key><string>${APP_NAME}</string>
+		  </dict>
+		 </dict></array>
+		</dict></plist>
+		PL
+		
+		  cp -f "$ipa" "${PUB_DIR}/"
+		  printf '%s|%s|%s|%s|%s\n' "$APP_NAME" "$BUNDLE_ID" "$VER_SHORT" "$VER_BUILD" "$plist_url" >> "${PUB_DIR}/_list.txt"
+		done
+		
+		# ---------- 生成 index.html ----------
+		INDEX="${PUB_DIR}/index.html"
+		{
+		  cat <<'HTML_HEAD'
+		<!doctype html>
+		<html><head>
+		<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+		<title>iOS Ad-Hoc Downloads</title>
+		<style>
+		 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:20px;}
+		 table{border-collapse:collapse;width:100%;}
+		 th,td{border:1px solid #ddd;padding:8px;} th{background:#f5f5f5;text-align:left;}
+		 a.btn{display:inline-block;padding:6px 10px;border:1px solid #0a7;border-radius:6px;text-decoration:none;}
+		</style></head><body>
+		<h2>iOS 内部分发 (Ad-Hoc)</h2>
+		<p>仅限已加入该 Ad-Hoc Profile 的设备使用。</p>
+		<table><thead><tr><th>App</th><th>Bundle ID</th><th>版本</th><th>Build</th><th>安装</th></tr></thead><tbody>
+		HTML_HEAD
+		  if [ -f "${PUB_DIR}/_list.txt" ]; then
+			while IFS='|' read -r _APP _BID _VER _BUILD _PLIST; do
+			  echo "<tr><td>${_APP}</td><td>${_BID}</td><td>${_VER}</td><td>${_BUILD}</td><td><a class=\\"btn\\" href=\\"itms-services://?action=download-manifest&url=${_PLIST}\\">安装</a></td></tr>"
+			done < "${PUB_DIR}/_list.txt"
+		  fi
+		  cat <<'HTML_TAIL'
+		</tbody></table></body></html>
+		HTML_TAIL
+		} > "$INDEX"
+		
+		echo "[PUB] generated files:"; ls -lh "$PUB_DIR"
+		
+		# ---------- 用 SSH 私钥上传 ----------
+		SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no)
+		ssh "${SSH_OPTS[@]}" "$WEB_USER@$WEB_HOST" "mkdir -p '$WEB_DIR'"
+		scp "${SSH_OPTS[@]}" "${PUB_DIR}"/* "$WEB_USER@$WEB_HOST:$WEB_DIR/"
+		
+		echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
+		'''
+			}
+		  }
+		}
+  
   
   post {
 	always {
