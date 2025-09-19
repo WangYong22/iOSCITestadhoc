@@ -873,11 +873,17 @@ PL
 			  rm -f "$info_xml"
 			}
 			
-			# ---------- 收集 IPA ----------
-			shopt -s nullglob
-			mapfile -t IPAS < <(ls -1t "$EXPORT_PATH"/*.ipa 2>/dev/null || true)
-			shopt -u nullglob
-			[ ${#IPAS[@]} -gt 0 ] || { echo "[WARN] no IPA under $EXPORT_PATH"; exit 0; }
+			# ---------- 收集 IPA（兼容 macOS Bash 3.2） ----------
+			IPAS=()
+			# 用 ls -1t 排序，再用 while+read 填充数组；process substitution 在 3.2 可用
+			while IFS= read -r f; do
+			  [ -n "$f" ] && IPAS+=("$f")
+			done < <(ls -1t "$EXPORT_PATH"/*.ipa 2>/dev/null || true)
+			
+			if [ ${#IPAS[@]} -eq 0 ]; then
+			  echo "[WARN] no IPA under $EXPORT_PATH"
+			  exit 0
+			fi
 			
 			PUB_DIR="$(mktemp -d /tmp/_ipa_pub.XXXXXX)"
 			trap 'rm -rf "$PUB_DIR"' EXIT
