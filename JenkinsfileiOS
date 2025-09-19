@@ -962,7 +962,7 @@ PL
 				
 				echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
 				'''
-					}
+				}
 			}
 		}
  
