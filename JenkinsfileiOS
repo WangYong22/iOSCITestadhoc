@@ -407,7 +407,7 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		  *)             DESTINATION_HINT="" ;;
 		esac
 		
-		echo "[PP] kind=$METHOD  platform_hint=${DESTINATION_HINT:-none}  cert=$CERT_KIND"
+		echo "[PP] kind=$METHOD  platform_hint=${DESTINATION_HINT:-none}"
 		
 		# 安装 profile
 		DEST_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
