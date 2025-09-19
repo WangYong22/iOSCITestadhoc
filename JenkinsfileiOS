@@ -842,10 +842,10 @@ PL
 			WEB_BASE_URL = 'https://vvv.wy2wy.tk/ios/myapp'
 		  }
 		  steps {
-			withCredentials([sshUserPrivateKey(credentialsId: 'webssh-key',
+			withCredentials([sshUserPrivateKey(credentialsId: 'websshkey',
 											   keyFileVariable: 'SSH_KEY',
 											   usernameVariable: 'WEB_USER')]) {
-			  sh '''#!/bin/bash
+			   sh '''#!/bin/bash
 			set -euo pipefail
 			
 			# ---------- 读取上一阶段构建变量 ----------
