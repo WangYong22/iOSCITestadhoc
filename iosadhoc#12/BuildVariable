@@ -1,0 +1,5 @@
+	    	project_scheme=iOSCITest
+			export_path=/Users/test/project/build/iOSCIadhocTest
+			build_dir=/Users/test/jenkins-agent/workspace/iosadhoc/build
+			archive_path=/Users/test/jenkins-agent/workspace/iosadhoc/build/iOSCITest.xcarchive
+			exportOptionsPlist=/Users/test/jenkins-agent/workspace/iosadhoc/build/iOSCITest.plist

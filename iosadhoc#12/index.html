@@ -14,10 +14,10 @@
     <li>点击下面按钮开始安装：</li>
   </ol>
   <p>
-    <a id="install" href="#">⚡ 安装 MyApp</a>
+    <a id="install" href="#">⚡ 安装 iOS AD-hoc App</a>
   </p>
   <script>
-    const manifest = encodeURIComponent('https://vvv.wy2wy.tk:4433/ios/myapp/manifest.plist'); // 改成你的
+    const manifest = encodeURIComponent('https://vvv.wy2wy.tk:4433/ios/myapp/manifestADhoc.plist'); // 改成你的
     const link = 'itms-services://?action=download-manifest&url=' + manifest;
     const a = document.getElementById('install');
     a.href = link;
