@@ -638,7 +638,6 @@ EOF
 		  <key>signingStyle</key><string>manual</string>
 		  <key>teamID</key><string>${TEAMID}</string>      
 		  <key>method</key><string>${METHOD}</string>
-		# <key>signingCertificate</key><string>${CERT_KIND}</string>
 		  <key>provisioningProfiles</key><dict>
 			<key>${BUNDLEID}</key><string>${CPROVISIONING_PROFILE_NAME}</string>
 		  </dict>
