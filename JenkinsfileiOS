@@ -935,12 +935,12 @@ HTML_TAIL
 			  scp "${SSH_OPTS[@]}" "${PUB_DIR}"/* "$WEB_USER@$WEB_HOST:$WEB_DIR/"
 			  echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
 			  '''
-		  } 
+			   } 
 				  
 		}
 	  }	  
 	}
- 
+ }
 
   
 	
@@ -983,7 +983,7 @@ HTML_TAIL
 				} else {
 				  println "NOT_FOUND " + name
 				}
-G
+
 				
 				curl -fsS -u "\$JAUTH" -H "Jenkins-Crumb: \$CRUMB" \
 				  --data-urlencode script@.cleanup.groovy \
