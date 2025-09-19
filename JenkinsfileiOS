@@ -265,7 +265,7 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		sw_vers
 		'''
 	
-		// 2) 拉取 provisioning profile（用 Jenkins 中 ID=137ssh 的私钥）
+	    // 2) 拉取 provisioning profile（用 Jenkins 中 ID=137ssh 的私钥）
 		
 		sh '''#!/bin/bash
 		set -euo pipefail
@@ -397,63 +397,7 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
   		    fi	 
 		  fi
 		
-		# === 从 provisioning profile 中提取证书 CN（PP_CERT_CN）===
-			PP_CERT_CN=""
-			
-			# 1) 优先用 plutil 导出 XML，然后用 awk 跨行抓取 <data>... 多行内容
-			PP_CERT_B64="$(
-			  /usr/bin/plutil -extract DeveloperCertificates.0 xml1 -o - "$PLIST" 2>/dev/null \
-			  | awk 'BEGIN{RS="</data>";FS="<data>"} NF>1{gsub(/[[:space:]]/,"",$2); print $2; exit}'
-			)"
-			
-			# 2) 如果还没抓到，换用 PlistBuddy 兜底（有的系统这一路更稳定）
-			if [ -z "$PP_CERT_B64" ]; then
-			  PP_CERT_B64="$(
-				/usr/libexec/PlistBuddy -c "Print :DeveloperCertificates:0" "$PLIST" 2>/dev/null \
-				| sed -e '1d;$d' | tr -d '[:space:]'
-			  )"
-			fi
-			
-			if [ -n "$PP_CERT_B64" ]; then
-			  tmpder="$(mktemp /tmp/_ppcert.XXXXXX.der)"
-			  # macOS base64 有 -D / -d 两种实现，这里都试一次
-			  printf '%s' "$PP_CERT_B64" | base64 -D >"$tmpder" 2>/dev/null || \
-			  printf '%s' "$PP_CERT_B64" | base64 -d >"$tmpder" 2>/dev/null
-			
-			  # 用 openssl 从 DER 证书拿 CN
-			  PP_CERT_SUBJECT="$(/usr/bin/openssl x509 -inform der -noout -subject -nameopt RFC2253 -in "$tmpder" 2>/dev/null || true)"
-			  PP_CERT_CN="$(printf '%s\n' "$PP_CERT_SUBJECT" | sed -n -E 's/.*CN=([^,]+).*/\1/p')"
-			  rm -f "$tmpder"
-			fi
-			
-			echo "[PP] cert_cn=${PP_CERT_CN:-<empty>}"
-			: "${PP_CERT_CN:?Failed to extract certificate CN from provisioning profile}"	
-			
-			
-		  # 已在前文解析得到：PP_CERT_CN（从 profile 的 DeveloperCertificates 取 CN）
-	  	  # 例：PP_CERT_CN="iPhone Distribution: Yong Wang (64KDUQCYEB)"
 		
-		  ALL_IDS="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-		  echo "[DBG] identities raw:"; printf '%s\n' "$ALL_IDS" | sed 's/^/  /'
-		
-		  # 仅按 CN 精确匹配（完全等于）
-		  CODE_SIGN_IDENTITY="$(
-		    printf '%s\n' "$ALL_IDS" \
-		    | awk -v cn="$PP_CERT_CN" -F'"' '$2==cn {print $2; exit}'
-		  )"
-		
-		  if [ -z "$CODE_SIGN_IDENTITY" ]; then
-		    echo "[ERR] 找不到与 profile 中证书 CN 完全一致的 codesigning identity"
-		    echo "      期望 CN: '$PP_CERT_CN'"
-		    echo "      请确认该证书(含私钥)已导入并位于当前 login.keychain 中。"
-		    exit 1
-		  fi
-		
-		  echo "[CERT] picked identity: $CODE_SIGN_IDENTITY"
-		
-		
-		  echo "[PP] method=$METHOD  cert=$CERT_KIND  hasDevices=$HAS_DEVICES  allDevices=$PROVISIONS_ALL"		
-
 
 		# —— 不再在这里直接设置 DESTINATION；只做平台“提示” —— 
 		case "$(printf '%s' "${PLATFORM0:-}" | tr '[:upper:]' '[:lower:]')" in
@@ -471,55 +415,7 @@ kubectl -n ci create secret generic jenkins-macos-${NODE} \\
 		install -m 0644 "$PROFILE" "$DEST_DIR/${UUID}.mobileprovision"
 		echo "[INSTALL] $DEST_DIR/${UUID}.mobileprovision"
 		
-		# 选择匹配证书（需要你已导入带私钥证书并解锁 login 钥匙串）
-		echo "[CHK] E: pick signing identity (robust matcher)"
-
 		
-			ALL_IDS="$(security find-identity -v -p codesigning 2>/dev/null || true)"
-			echo "[DBG] identities raw:"
-			printf '%s\n' "$ALL_IDS" | sed -e 's/^/  /'
-			
-			pick_by_cn() {
-			  # 精确用证书可读名称匹配（CN）
-			  printf '%s\n' "$ALL_IDS" | awk -v cn="$CERT_CN" -F'"' '$0 ~ cn {print $2; exit}'
-			}
-			
-			pick_by_kind_team() {
-			  # 同时匹配证书类型 + (TEAMID) —— 某些系统输出里没有(TEAMID)，可能匹配不到
-			  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -v t="$TEAMID" -F'"' \
-				  'index($0,k) && index($0,"(" t ")") {print $2; exit}'
-			}
-			
-			pick_by_kind_only() {
-			  # 只匹配证书类型（如 Apple Development），取第一张
-			  printf '%s\n' "$ALL_IDS" | awk -v k="$CERT_KIND" -F'"' \
-				  'index($0,k) {print $2; exit}'
-			}
-			
-			CODE_SIGN_IDENTITY=""
-			
-			if [ -n "${CERT_CN:-}" ]; then
-			  CODE_SIGN_IDENTITY="$(pick_by_cn)"
-			  echo "[DBG] pick_by_cn => ${CODE_SIGN_IDENTITY:-<empty>}"
-			fi
-			
-			if [ -z "$CODE_SIGN_IDENTITY" ]; then
-			  CODE_SIGN_IDENTITY="$(pick_by_kind_team)"
-			  echo "[DBG] pick_by_kind_team => ${CODE_SIGN_IDENTITY:-<empty>}"
-			fi
-			
-			if [ -z "$CODE_SIGN_IDENTITY" ]; then
-			  CODE_SIGN_IDENTITY="$(pick_by_kind_only)"
-			  echo "[DBG] pick_by_kind_only => ${CODE_SIGN_IDENTITY:-<empty>}"
-			fi
-			
-			if [ -z "$CODE_SIGN_IDENTITY" ]; then
-			  echo "[ERR] 仍然找不到匹配证书（kind=$CERT_KIND, team=$TEAMID）。"
-			  echo "      你可以显式指定： export CERT_CN='Apple Development: Yong Wang (LFBT5QQQ6J)'"
-			  exit 1
-			fi
-			
-			echo "[CERT] picked: $CODE_SIGN_IDENTITY"
 		
 		
 		# ====== 自动探测 Xcode 工程 / Scheme / Configuration ======
@@ -741,8 +637,8 @@ EOF
 		<plist version="1.0"><dict>
 		  <key>signingStyle</key><string>manual</string>
 		  <key>teamID</key><string>${TEAMID}</string>      
-		  <key>method</key><string>$${METHOD}</string>
-		  <key>signingCertificate</key><string>${CERT_KIND}</string>
+		  <key>method</key><string>${METHOD}</string>
+		# <key>signingCertificate</key><string>${CERT_KIND}</string>
 		  <key>provisioningProfiles</key><dict>
 			<key>${BUNDLEID}</key><string>${CPROVISIONING_PROFILE_NAME}</string>
 		  </dict>
@@ -775,13 +671,13 @@ PL
 		  -destination "$DESTINATION" \
 		  CODE_SIGN_STYLE=Manual \
 		  DEVELOPMENT_TEAM="$TEAMID" \
-		 # CODE_SIGNING_ALLOWED=NO \
-		  CODE_SIGN_IDENTITY="Apple Distribution" \
+		  CODE_SIGNING_ALLOWED=NO \
+		 # CODE_SIGN_IDENTITY="Apple Distribution" \
 		  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLEID" \
 		  PROVISIONING_PROFILE_SPECIFIER="$CPROVISIONING_PROFILE_NAME" \
-		  -allowProvisioningUpdates \
-		  -allowProvisioningDeviceRegistration \
-		  -UseModernBuildSystem=NO \
+		#  -allowProvisioningUpdates \
+		#  -allowProvisioningDeviceRegistration \
+		#  -UseModernBuildSystem=NO \
 		  -quiet		
 		
 		
