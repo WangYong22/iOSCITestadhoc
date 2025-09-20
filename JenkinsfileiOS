@@ -951,7 +951,7 @@ PY
 		# 运行并清理
 		python3 /tmp/_gen_ipa_index.py
 		rm -f /tmp/_gen_ipa_index.py
-		REMOTE
+REMOTE
 		
 		echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
 		'''
