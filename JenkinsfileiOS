@@ -836,7 +836,7 @@ PL
    	 withCredentials([sshUserPrivateKey(credentialsId: 'websshkey',
                                        keyFileVariable: 'SSH_KEY',
                                        usernameVariable: 'WEB_USER')]) {
-        #!/bin/bash
+        sh '''#!/bin/bash
 		set -euo pipefail
 		
 		# —— 这些变量按你的环境设置（4433 端口保持不变）——
@@ -982,6 +982,7 @@ HTML_TAIL
 		REMOTE
 		
 		echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
+		'''
 		} 
 				  
 	   }
