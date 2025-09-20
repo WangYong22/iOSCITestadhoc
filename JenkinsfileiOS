@@ -831,7 +831,7 @@ PL
 		}
 			  }
 	    // === 紧接着在同一节点上发布到 Web ===
-   	 withCredentials([sshUserPrivateKey(credentialsId: 'webssh-key',
+   	 withCredentials([sshUserPrivateKey(credentialsId: 'websshkey',
                                        keyFileVariable: 'SSH_KEY',
                                        usernameVariable: 'WEB_USER')]) {
 		  sh '''#!/bin/bash
