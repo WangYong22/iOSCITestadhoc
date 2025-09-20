@@ -24,7 +24,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		154458F02E6F09B900861EEE /* iOSCITest.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iOSCITest.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		154458F02E6F09B900861EEE /* iOSCIadhocTest.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iOSCIadhocTest.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		154458FD2E6F09BB00861EEE /* iOSCITestTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iOSCITestTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		154459072E6F09BB00861EEE /* iOSCITestUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = iOSCITestUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -85,7 +85,7 @@
 		154458F12E6F09B900861EEE /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				154458F02E6F09B900861EEE /* iOSCITest.app */,
+				154458F02E6F09B900861EEE /* iOSCIadhocTest.app */,
 				154458FD2E6F09BB00861EEE /* iOSCITestTests.xctest */,
 				154459072E6F09BB00861EEE /* iOSCITestUITests.xctest */,
 			);
@@ -95,9 +95,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		154458EF2E6F09B900861EEE /* iOSCITest */ = {
+		154458EF2E6F09B900861EEE /* iOSCIadhocTest */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 154459112E6F09BC00861EEE /* Build configuration list for PBXNativeTarget "iOSCITest" */;
+			buildConfigurationList = 154459112E6F09BC00861EEE /* Build configuration list for PBXNativeTarget "iOSCIadhocTest" */;
 			buildPhases = (
 				154458EC2E6F09B900861EEE /* Sources */,
 				154458ED2E6F09B900861EEE /* Frameworks */,
@@ -110,11 +110,11 @@
 			fileSystemSynchronizedGroups = (
 				154458F22E6F09B900861EEE /* iOSCIadhocTest */,
 			);
-			name = iOSCITest;
+			name = iOSCIadhocTest;
 			packageProductDependencies = (
 			);
 			productName = iOSCITest;
-			productReference = 154458F02E6F09B900861EEE /* iOSCITest.app */;
+			productReference = 154458F02E6F09B900861EEE /* iOSCIadhocTest.app */;
 			productType = "com.apple.product-type.application";
 		};
 		154458FC2E6F09BB00861EEE /* iOSCITestTests */ = {
@@ -200,7 +200,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				154458EF2E6F09B900861EEE /* iOSCITest */,
+				154458EF2E6F09B900861EEE /* iOSCIadhocTest */,
 				154458FC2E6F09BB00861EEE /* iOSCITestTests */,
 				154459062E6F09BB00861EEE /* iOSCITestUITests */,
 			);
@@ -258,12 +258,12 @@
 /* Begin PBXTargetDependency section */
 		154458FF2E6F09BB00861EEE /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 154458EF2E6F09B900861EEE /* iOSCITest */;
+			target = 154458EF2E6F09B900861EEE /* iOSCIadhocTest */;
 			targetProxy = 154458FE2E6F09BB00861EEE /* PBXContainerItemProxy */;
 		};
 		154459092E6F09BB00861EEE /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 154458EF2E6F09B900861EEE /* iOSCITest */;
+			target = 154458EF2E6F09B900861EEE /* iOSCIadhocTest */;
 			targetProxy = 154459082E6F09BB00861EEE /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -540,7 +540,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		154459112E6F09BC00861EEE /* Build configuration list for PBXNativeTarget "iOSCITest" */ = {
+		154459112E6F09BC00861EEE /* Build configuration list for PBXNativeTarget "iOSCIadhocTest" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				154459122E6F09BC00861EEE /* Debug */,
