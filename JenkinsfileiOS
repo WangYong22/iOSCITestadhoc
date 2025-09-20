@@ -829,117 +829,164 @@ PL
 		echo "[DONE] artifacts uploaded to ${REMOTE}:${REMOTE_DIR}"
 		'''
 		}
-			  }
+	  }
+			  
+			  
 	    // === 紧接着在同一节点上发布到 Web ===
    	 withCredentials([sshUserPrivateKey(credentialsId: 'websshkey',
                                        keyFileVariable: 'SSH_KEY',
                                        usernameVariable: 'WEB_USER')]) {
-		  sh '''#!/bin/bash
-		  set -euo pipefail
-		  # 读取 BuildVariable 以拿到 export_path
-		  set +u
-		  [ -f BuildVariable ] && . BuildVariable || true
-		  set -u
-		  EXPORT_PATH="${export_path:-$PWD}"
-	
-		  echo "[PUB] EXPORT_PATH=$EXPORT_PATH"
-		  [ -d "$EXPORT_PATH" ] || { echo "[ERR] export dir not found: $EXPORT_PATH"; exit 2; }
-	
-		  # —— 收集 IPA（兼容 macOS bash 3.2）——
-		  IPAS=()
-		  while IFS= read -r f; do [ -n "$f" ] && IPAS+=("$f"); done < <(ls -1t "$EXPORT_PATH"/*.ipa 2>/dev/null || true)
-		  [ ${#IPAS[@]} -gt 0 ] || { echo "[WARN] no IPA under $EXPORT_PATH"; exit 0; }
-	
-		  WEB_HOST='vvv.wy2wy.tk'
-		  WEB_DIR='/var/www/ios/myapp'
-		  WEB_BASE_URL='https://vvv.wy2wy.tk/ios/myapp'
-	
-		  get_info_from_ipa() {
-			local ipa="$1" app_path info_xml
-			app_path="$(zip -lf "$ipa" | awk '/Payload\\/.*\\.app\\/$/ {print $NF; exit}')"
-			[ -n "$app_path" ] || { echo "[ERR] cannot find .app in $ipa"; return 2; }
-			info_xml="$(mktemp /tmp/_Info.XXXXXX.xml)"
-			unzip -p "$ipa" "${app_path}Info.plist" | plutil -convert xml1 -o "$info_xml" - 2>/dev/null
-			BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_xml")
-			VER_SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_xml" 2>/dev/null || echo "1.0")
-			VER_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_xml" 2>/dev/null || echo "1")
-			APP_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$info_xml" 2>/dev/null || \
-					   /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$info_xml" 2>/dev/null || echo "App")
-			rm -f "$info_xml"
-		  }
-	
-		  PUB_DIR="$(mktemp -d /tmp/_ipa_pub.XXXXXX)"
-		  trap 'rm -rf "$PUB_DIR"' EXIT
-	
-		  i=0
-		  for ipa in "${IPAS[@]}"; do
-			((i++))
-			echo "[PUB] item#$i -> $ipa"
-			get_info_from_ipa "$ipa"
-			base="$(basename "$ipa")"; name_noext="${base%.ipa}"; plist_name="${name_noext}.plist"
-			ipa_url="${WEB_BASE_URL}/${base}"; plist_url="${WEB_BASE_URL}/${plist_name}"
-	
-			cat > "${PUB_DIR}/${plist_name}" <<PL
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
- <key>items</key><array><dict>
-  <key>assets</key><array><dict>
-    <key>kind</key><string>software-package</string>
-    <key>url</key><string>${ipa_url}</string>
-  </dict></array>
-  <key>metadata</key><dict>
-    <key>bundle-identifier</key><string>${BUNDLE_ID}</string>
-    <key>bundle-version</key><string>${VER_BUILD}</string>
-    <key>kind</key><string>software</string>
-    <key>title</key><string>${APP_NAME}</string>
-  </dict>
- </dict></array>
-</dict></plist>
+        #!/bin/bash
+		set -euo pipefail
+		
+		# —— 这些变量按你的环境设置（4433 端口保持不变）——
+		WEB_HOST='vvv.wy2wy.tk'
+		WEB_DIR='/var/www/ios/myapp'
+		WEB_BASE_URL='https://vvv.wy2wy.tk:4433/ios/myapp'
+		BUNDLE_VERSION_FIXED='1.0'
+		
+		# 读取构建阶段导出的 export_path（用于找到本地 IPA 并上传）
+		set +u
+		[ -f BuildVariable ] && . BuildVariable || true
+		set -u
+		EXPORT_PATH="${export_path:-$PWD}"
+		
+		echo "[PUB] EXPORT_PATH=$EXPORT_PATH"
+		[ -d "$EXPORT_PATH" ] || { echo "[ERR] export dir not found: $EXPORT_PATH"; exit 2; }
+		
+		# 先把本地 IPA 上传到服务器目录
+		SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no)
+		ssh "${SSH_OPTS[@]}" "$WEB_USER@$WEB_HOST" "mkdir -p '$WEB_DIR'"
+		if ls "$EXPORT_PATH"/*.ipa >/dev/null 2>&1; then
+		  scp "${SSH_OPTS[@]}" "$EXPORT_PATH"/*.ipa "$WEB_USER@$WEB_HOST:$WEB_DIR/"
+		else
+		  echo "[WARN] no IPA under $EXPORT_PATH"
+		fi
+		
+		# —— 下面这段全部在服务器上执行：在 WEB_DIR 里“收集 IPA”、生成 manifest、重建 index.html ——
+		ssh "${SSH_OPTS[@]}" "$WEB_USER@$WEB_HOST" "bash -s" <<'REMOTE'
+		set -euo pipefail
+		
+		WEB_DIR='/var/www/ios/myapp'
+		WEB_BASE_URL='https://vvv.wy2wy.tk:4433/ios/myapp'
+		BUNDLE_VERSION_FIXED='1.0'
+		
+		cd "$WEB_DIR"
+		
+		# 为每个 ipa 生成对应的 manifest.plist（覆盖式，确保一一对应）
+		shopt -s nullglob
+		# 按时间倒序（新到旧）
+		for ipa in $(ls -1t *.ipa 2>/dev/null); do
+		  echo "[REMOTE] handle: \$ipa"
+		  # 找 .app 路径
+		  app_path=$(zip -lf "\$ipa" | awk '/Payload\/.*\.app\/$/ {print \$NF; exit}')
+		  [ -n "\$app_path" ] || { echo "[ERR] cannot find .app in \$ipa"; continue; }
+		
+		  info_xml=$(mktemp /tmp/_Info.XXXXXX.xml)
+		  unzip -p "\$ipa" "\${app_path}Info.plist" | plutil -convert xml1 -o "\$info_xml" - 2>/dev/null
+		
+		  BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "\$info_xml")
+		  APP_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "\$info_xml" 2>/dev/null || \
+					 /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "\$info_xml" 2>/dev/null || echo "App")
+		  rm -f "\$info_xml"
+		
+		  base="\$(basename "\$ipa")"
+		  name_noext="\${base%.ipa}"
+		  plist_name="\${name_noext}.plist"
+		  ipa_url="\$WEB_BASE_URL/\$base"
+		
+		  cat > "\$plist_name" <<PL
+		<?xml version="1.0" encoding="UTF-8"?>
+		<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+		  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+		<plist version="1.0">
+		<dict>
+		  <key>items</key>
+		  <array>
+			<dict>
+			  <key>assets</key>
+			  <array>
+				<dict>
+				  <key>kind</key><string>software-package</string>
+				  <key>url</key><string>\${ipa_url}</string>
+				</dict>
+			  </array>
+			  <key>metadata</key>
+			  <dict>
+				<key>bundle-identifier</key><string>\${BUNDLE_ID}</string>
+				<key>bundle-version</key><string>\${BUNDLE_VERSION_FIXED}</string>
+				<key>kind</key><string>software</string>
+				<key>title</key><string>\${APP_NAME}</string>
+			  </dict>
+			</dict>
+		  </array>
+		</dict>
+		</plist>
 PL
-			cp -f "$ipa" "${PUB_DIR}/"
-			printf '%s|%s|%s|%s|%s\n' "$APP_NAME" "$BUNDLE_ID" "$VER_SHORT" "$VER_BUILD" "$plist_url" >> "${PUB_DIR}/_list.txt"
-			  done
+		done
+		shopt -u nullglob
 		
-			  INDEX="${PUB_DIR}/index.html"
-			  {
-				cat <<'HTML_HEAD'
-				<!doctype html>
-				<html><head>
-				<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
-				<title>iOS Ad-Hoc Downloads</title>
-				<style>
-				 body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:20px;}
-				 table{border-collapse:collapse;width:100%;}
-				 th,td{border:1px solid #ddd;padding:8px;} th{background:#f5f5f5;text-align:left;}
-				 a.btn{display:inline-block;padding:6px 10px;border:1px solid #0a7;border-radius:6px;text-decoration:none;}
-				</style></head><body>
-				<h2>iOS 内部分发 (Ad-Hoc)</h2>
-				<p>仅限已加入该 Ad-Hoc Profile 的设备使用。</p>
-				<table><thead><tr><th>App</th><th>Bundle ID</th><th>版本</th><th>Build</th><th>安装</th></tr></thead><tbody>
-				HTML_HEAD
-					if [ -f "${PUB_DIR}/_list.txt" ]; then
-					  while IFS='|' read -r _APP _BID _VER _BUILD _PLIST; do
-						echo "<tr><td>${_APP}</td><td>${_BID}</td><td>${_VER}</td><td>${_BUILD}</td><td><a class=\\"btn\\" href=\\"itms-services://?action=download-manifest&url=${_PLIST}\\">安装</a></td></tr>"
-					  done < "${PUB_DIR}/_list.txt"
-					fi
-					cat <<'HTML_TAIL'
-</tbody></table></body></html>
+		# 重建 index.html：根据目录里的所有 *.plist 生成安装链接
+		INDEX="$WEB_DIR/index.html"
+		{
+		  cat <<'HTML_HEAD'
+		<!doctype html>
+		<html lang="zh-CN">
+		<head>
+		  <meta charset="utf-8"/>
+		  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+		  <title>测试 App 安装</title>
+		  <style>
+			body{font-family:-apple-system,Helvetica,Arial;margin:24px;line-height:1.6}
+			table{border-collapse:collapse;width:100%}
+			th,td{border:1px solid #ddd;padding:8px}
+			th{background:#f5f5f5;text-align:left}
+			a.btn{display:inline-block;padding:6px 10px;border:1px solid #0a7;border-radius:6px;text-decoration:none}
+		  </style>
+		</head>
+		<body>
+		  <h2>iOS Ad-Hoc 安装</h2>
+		  <ol>
+			<li>请使用 <b>iPhone/iPad 上的 Safari</b> 打开本页。</li>
+			<li>确保设备 UDID 已加入 Ad Hoc Profile。</li>
+			<li>点击“安装”即可。</li>
+		  </ol>
+		  <table>
+			<thead><tr><th>名称</th><th>Bundle ID</th><th>版本</th><th>安装</th></tr></thead>
+			<tbody>
+HTML_HEAD
+		
+		  shopt -s nullglob
+		  for plist in \$(ls -1t *.plist 2>/dev/null); do
+			title=\$(/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:title' "\$plist" 2>/dev/null || basename "\$plist" .plist)
+			bid=\$(/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-identifier' "\$plist" 2>/dev/null || echo '-')
+			ver=\$(/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-version' "\$plist" 2>/dev/null || echo '-')
+		
+			full="\$WEB_BASE_URL/\$plist"
+			esc=\$(python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1], safe=""))' "\$full" 2>/dev/null || echo "\$full")
+			link="itms-services://?action=download-manifest&url=\$esc"
+		
+			echo "<tr><td>\${title}</td><td>\${bid}</td><td>\${ver}</td><td><a class=\"btn\" href=\"\${link}\">安装</a></td></tr>"
+		  done
+		  shopt -u nullglob
+		
+		  cat <<'HTML_TAIL'
+			</tbody>
+		  </table>
+		  <p style="color:#666;font-size:13px">若点击无反应：确认使用 Safari、HTTPS 有效证书，且设备 UDID 已在 Ad Hoc 白名单中。</p>
+		</body></html>
 HTML_TAIL
-			  } > "$INDEX"
+		} > "\$INDEX"
 		
-			  echo "[PUB] generated files:"; ls -lh "$PUB_DIR"
+		echo "[REMOTE] index.html rebuilt at \$INDEX"
+		REMOTE
 		
-			  SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no)
-			  ssh "${SSH_OPTS[@]}" "$WEB_USER@$WEB_HOST" "mkdir -p '$WEB_DIR'"
-			  scp "${SSH_OPTS[@]}" "${PUB_DIR}"/* "$WEB_USER@$WEB_HOST:$WEB_DIR/"
-			  echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
-			  '''
-			   } 
+		echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
+		} 
 				  
-		}
-	  }	  
-	}
+	   }
+	 }	  
+   }
  }
 
   
