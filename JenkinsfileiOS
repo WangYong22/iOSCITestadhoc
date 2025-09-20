@@ -863,122 +863,91 @@ PL
 		  echo "[WARN] no IPA under $EXPORT_PATH"
 		fi
 		
-		# —— 下面这段全部在服务器上执行：在 WEB_DIR 里“收集 IPA”、生成 manifest、重建 index.html ——
+		# —— 下面这段全部在服务器上执行：在 WEB_DIR 里生成 manifest + 重建 index.html ——
 		ssh "${SSH_OPTS[@]}" "$WEB_USER@$WEB_HOST" "bash -s" <<'REMOTE'
 		set -euo pipefail
+		cd '/var/www/ios/myapp'
 		
-		WEB_DIR='/var/www/ios/myapp'
-		WEB_BASE_URL='https://vvv.wy2wy.tk:4433/ios/myapp'
-		BUNDLE_VERSION_FIXED='1.0'
+		# 用 Python 读取 IPA 的 Info.plist，生成 *.plist，并重建 index.html
+		python3 - <<'PY'
+		import os, glob, zipfile, plistlib, urllib.parse, html
 		
-		cd "$WEB_DIR"
+		WEB_BASE_URL = "https://vvv.wy2wy.tk:4433/ios/myapp"
+		BUNDLE_VERSION_FIXED = "1.0"
 		
-		# 为每个 ipa 生成对应的 manifest.plist（覆盖式，确保一一对应）
-		shopt -s nullglob
-		# 按时间倒序（新到旧）
-		for ipa in $(ls -1t *.ipa 2>/dev/null); do
-		  echo "[REMOTE] handle: \$ipa"
-		  # 找 .app 路径
-		  app_path=$(zip -lf "\$ipa" | awk '/Payload\/.*\.app\/$/ {print \$NF; exit}')
-		  [ -n "\$app_path" ] || { echo "[ERR] cannot find .app in \$ipa"; continue; }
+		ipas = sorted(glob.glob("*.ipa"), key=os.path.getmtime, reverse=True)
+		rows = []
 		
-		  info_xml=$(mktemp /tmp/_Info.XXXXXX.xml)
-		  unzip -p "\$ipa" "\${app_path}Info.plist" | plutil -convert xml1 -o "\$info_xml" - 2>/dev/null
+		for ipa in ipas:
+			try:
+				with zipfile.ZipFile(ipa) as z:
+					appdir = next((n for n in z.namelist() if n.startswith("Payload/") and n.endswith(".app/")), None)
+					if not appdir:
+						print(f"[ERR] cannot find .app in {ipa}")
+						continue
+					with z.open(appdir + "Info.plist") as f:
+						info = plistlib.load(f)
+				bundle_id = info.get("CFBundleIdentifier", "-")
+				ver_short = info.get("CFBundleShortVersionString", "1.0")
+				ver_build = info.get("CFBundleVersion", "1")
+				app_name = info.get("CFBundleDisplayName") or info.get("CFBundleName") or "App"
 		
-		  BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "\$info_xml")
-		  APP_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "\$info_xml" 2>/dev/null || \
-					 /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "\$info_xml" 2>/dev/null || echo "App")
-		  rm -f "\$info_xml"
+				base = os.path.basename(ipa)
+				plist_name = os.path.splitext(base)[0] + ".plist"
+				ipa_url = f"{WEB_BASE_URL}/{base}"
 		
-		  base="\$(basename "\$ipa")"
-		  name_noext="\${base%.ipa}"
-		  plist_name="\${name_noext}.plist"
-		  ipa_url="\$WEB_BASE_URL/\$base"
+				with open(plist_name, "wb") as pf:
+					plistlib.dump({
+						"items": [{
+							"assets": [{"kind": "software-package", "url": ipa_url}],
+							"metadata": {
+								"bundle-identifier": bundle_id,
+								"bundle-version": BUNDLE_VERSION_FIXED,
+								"kind": "software",
+								"title": app_name,
+							}
+						}]}
+					, pf, fmt=plistlib.FMT_XML)
 		
-		  cat > "\$plist_name" <<PL
-		<?xml version="1.0" encoding="UTF-8"?>
-		<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-		  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-		<plist version="1.0">
-		<dict>
-		  <key>items</key>
-		  <array>
-			<dict>
-			  <key>assets</key>
-			  <array>
-				<dict>
-				  <key>kind</key><string>software-package</string>
-				  <key>url</key><string>\${ipa_url}</string>
-				</dict>
-			  </array>
-			  <key>metadata</key>
-			  <dict>
-				<key>bundle-identifier</key><string>\${BUNDLE_ID}</string>
-				<key>bundle-version</key><string>\${BUNDLE_VERSION_FIXED}</string>
-				<key>kind</key><string>software</string>
-				<key>title</key><string>\${APP_NAME}</string>
-			  </dict>
-			</dict>
-		  </array>
-		</dict>
-		</plist>
-PL
-		done
-		shopt -u nullglob
+				rows.append((app_name, bundle_id, ver_short, ver_build, plist_name))
+				print(f"[REMOTE] wrote {plist_name}")
+			except Exception as e:
+				print(f"[ERR] {ipa}: {e}")
 		
-		# 重建 index.html：根据目录里的所有 *.plist 生成安装链接
-		INDEX="$WEB_DIR/index.html"
-		{
-		  cat <<'HTML_HEAD'
-		<!doctype html>
-		<html lang="zh-CN">
-		<head>
-		  <meta charset="utf-8"/>
-		  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-		  <title>测试 App 安装</title>
-		  <style>
-			body{font-family:-apple-system,Helvetica,Arial;margin:24px;line-height:1.6}
-			table{border-collapse:collapse;width:100%}
-			th,td{border:1px solid #ddd;padding:8px}
-			th{background:#f5f5f5;text-align:left}
-			a.btn{display:inline-block;padding:6px 10px;border:1px solid #0a7;border-radius:6px;text-decoration:none}
-		  </style>
-		</head>
-		<body>
-		  <h2>iOS Ad-Hoc 安装</h2>
-		  <ol>
-			<li>请使用 <b>iPhone/iPad 上的 Safari</b> 打开本页。</li>
-			<li>确保设备 UDID 已加入 Ad Hoc Profile。</li>
-			<li>点击“安装”即可。</li>
-		  </ol>
-		  <table>
-			<thead><tr><th>名称</th><th>Bundle ID</th><th>版本</th><th>安装</th></tr></thead>
-			<tbody>
-HTML_HEAD
-		
-		  shopt -s nullglob
-		  for plist in \$(ls -1t *.plist 2>/dev/null); do
-			title=\$(/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:title' "\$plist" 2>/dev/null || basename "\$plist" .plist)
-			bid=\$(/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-identifier' "\$plist" 2>/dev/null || echo '-')
-			ver=\$(/usr/libexec/PlistBuddy -c 'Print :items:0:metadata:bundle-version' "\$plist" 2>/dev/null || echo '-')
-		
-			full="\$WEB_BASE_URL/\$plist"
-			esc=\$(python -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1], safe=""))' "\$full" 2>/dev/null || echo "\$full")
-			link="itms-services://?action=download-manifest&url=\$esc"
-		
-			echo "<tr><td>\${title}</td><td>\${bid}</td><td>\${ver}</td><td><a class=\"btn\" href=\"\${link}\">安装</a></td></tr>"
-		  done
-		  shopt -u nullglob
-		
-		  cat <<'HTML_TAIL'
-			</tbody>
-		  </table>
-		  <p style="color:#666;font-size:13px">若点击无反应：确认使用 Safari、HTTPS 有效证书，且设备 UDID 已在 Ad Hoc 白名单中。</p>
-		</body></html>
-HTML_TAIL
-		} > "\$INDEX"
-		
-		echo "[REMOTE] index.html rebuilt at \$INDEX"
+		# 重建 index.html
+		with open("index.html", "w", encoding="utf-8") as out:
+			out.write("""<!doctype html>
+		<html lang="zh-CN"><head>
+		<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+		<title>测试 App 安装</title>
+		<style>
+		 body{font-family:-apple-system,Helvetica,Arial;margin:24px;line-height:1.6}
+		 table{border-collapse:collapse;width:100%}
+		 th,td{border:1px solid #ddd;padding:8px}
+		 th{background:#f5f5f5;text-align:left}
+		 a.btn{display:inline-block;padding:6px 10px;border:1px solid #0a7;border-radius:6px;text-decoration:none}
+		</style>
+		</head><body>
+		<h2>iOS Ad-Hoc 安装</h2>
+		<ol>
+		 <li>请使用 <b>iPhone/iPad 上的 Safari</b> 打开本页。</li>
+		 <li>确保设备 UDID 已加入 Ad Hoc Profile。</li>
+		 <li>点击“安装”即可。</li>
+		</ol>
+		<table><thead><tr><th>名称</th><th>Bundle ID</th><th>版本</th><th>安装</th></tr></thead><tbody>
+		""")
+			for app, bid, vs, vb, plist_name in rows:
+				full = f"{WEB_BASE_URL}/{plist_name}"
+				esc = urllib.parse.quote(full, safe="")
+				link = f"itms-services://?action=download-manifest&url={esc}"
+				out.write(f"<tr><td>{html.escape(app)}</td><td>{html.escape(bid)}</td>"
+						  f"<td>{html.escape(vs)} ({html.escape(vb)})</td>"
+						  f"<td><a class=\\"btn\\" href=\\"{link}\\">安装</a></td></tr>\\n")
+			out.write("</tbody></table>"
+					  "<p style='color:#666;font-size:13px'>若点击无反应：确认使用 Safari、HTTPS 证书有效，且设备 UDID 已在 Ad Hoc 白名单中。</p>"
+					  "</body></html>")
+		print("[REMOTE] index.html rebuilt")
+		PY
 		REMOTE
 		
 		echo "[PUB] done. Visit: ${WEB_BASE_URL}/index.html"
